@@ -1,0 +1,20 @@
+# Entorno virtual de Python
+.venv/
+venv/
+ENV/
+
+# Artefactos de compilación de PyInstaller
+build/
+dist/
+*.spec
+
+# Cachés de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Archivos del sistema macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
