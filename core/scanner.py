@@ -1,5 +1,6 @@
 import os
 import subprocess
+import tempfile
 import uuid
 from typing import Callable, Optional
 
@@ -176,6 +177,160 @@ class SystemDataScanner:
                 except (PermissionError, FileNotFoundError, OSError):
                     continue
 
+        # Scan macOS per-user temporary folders (/private/var/folders/.../<user_id>)
+        if not self._cancel_requested:
+            items.extend(self._scan_macos_user_temp_folders(report))
+
+        return items
+
+    def _scan_macos_user_temp_folders(
+        self, report: Callable[[str, float], None]
+    ) -> list[ScanItem]:
+        """Scans the active user's Darwin temporary directories (/var/folders/.../<user_hash>)
+        for orphaned temporary files (.aac, .tmp, etc.), leftover installer folders (MSau_*),
+        and non-Apple user caches in T/ and C/.
+        """
+        items: list[ScanItem] = []
+        try:
+            raw_tmp = os.environ.get("TMPDIR") or tempfile.gettempdir()
+            user_temp_T = os.path.realpath(raw_tmp)
+            if not user_temp_T or "/var/folders/" not in user_temp_T:
+                return items
+            user_var_root = os.path.dirname(user_temp_T)
+        except Exception:
+            return items
+
+        if not os.path.isdir(user_var_root):
+            return items
+
+        report("Analizando archivos temporales de macOS (/var/folders)...", 0.28)
+
+        # 1. Orphaned files directly inside /private/var/folders/.../<user_hash>/ (outside 0, C, T, X)
+        standard_subfolders = {"0", "C", "T", "X"}
+        try:
+            with os.scandir(user_var_root) as entries:
+                for entry in entries:
+                    if self._cancel_requested:
+                        break
+                    if entry.name.startswith(".") or entry.name in standard_subfolders or entry.is_symlink():
+                        continue
+                    try:
+                        size = get_entry_size(entry.path, self.is_cancelled)
+                        if size >= self.MIN_CACHE_LOG_BYTES:
+                            items.append(
+                                ScanItem(
+                                    id=str(uuid.uuid4()),
+                                    name=f"Temporal huérfano: {entry.name}",
+                                    path=entry.path,
+                                    abbreviated_path=entry.path,
+                                    size_bytes=size,
+                                    module=ModuleType.CACHES_LOGS,
+                                    clean_strategy=CleanStrategy.DELETE_ITEM,
+                                    safety_level=SafetyLevel.SAFE,
+                                    safety_badge="🟢 100% Seguro borrar",
+                                    description="Archivo temporal huérfano en /private/var/folders que nunca fue limpiado tras cerrarse la aplicación.",
+                                    category_tag="Temporal macOS (/var/folders)",
+                                    selected=False,
+                                )
+                            )
+                    except (PermissionError, FileNotFoundError, OSError):
+                        continue
+        except (PermissionError, FileNotFoundError, OSError):
+            pass
+
+        # 2. Safe temporary items inside T/ (e.g., MSau_* Microsoft AutoUpdate temp dirs, orphaned caches)
+        protected_t_names = {
+            "TemporaryItems",
+            "Diagnostics",
+            "AudioComponentRegistrar",
+            "AudioConverterService",
+            "CrashHandlerService",
+            "ReportCrashService",
+            "SandboxHelper",
+            "StatusKitAgent",
+            "assessmentagent",
+        }
+        if os.path.isdir(user_temp_T) and not self._cancel_requested:
+            try:
+                with os.scandir(user_temp_T) as entries:
+                    for entry in entries:
+                        if self._cancel_requested:
+                            break
+                        if (
+                            entry.name.startswith(".")
+                            or entry.name in protected_t_names
+                            or entry.is_symlink()
+                            or self.app_detector.is_apple_system_folder(entry.name)
+                        ):
+                            continue
+                        try:
+                            size = get_entry_size(entry.path, self.is_cancelled)
+                            if size >= self.MIN_CACHE_LOG_BYTES:
+                                is_msau = entry.name.startswith("MSau_")
+                                desc = (
+                                    "Carpeta temporal antigua del actualizador de Microsoft (AutoUpdate) en $TMPDIR. 100% seguro borrar."
+                                    if is_msau
+                                    else "Carpeta o archivo temporal de aplicación en $TMPDIR (/var/folders/.../T). 100% seguro borrar."
+                                )
+                                items.append(
+                                    ScanItem(
+                                        id=str(uuid.uuid4()),
+                                        name=f"{entry.name} (Temp T)" if not is_msau else f"Microsoft AutoUpdate Temp ({entry.name})",
+                                        path=entry.path,
+                                        abbreviated_path=entry.path,
+                                        size_bytes=size,
+                                        module=ModuleType.CACHES_LOGS,
+                                        clean_strategy=CleanStrategy.DELETE_ITEM,
+                                        safety_level=SafetyLevel.SAFE,
+                                        safety_badge="🟢 100% Seguro borrar",
+                                        description=desc,
+                                        category_tag="Carpeta Temporal ($TMPDIR)",
+                                        selected=False,
+                                    )
+                                )
+                        except (PermissionError, FileNotFoundError, OSError):
+                            continue
+            except (PermissionError, FileNotFoundError, OSError):
+                pass
+
+        # 3. Non-Apple application caches inside C/ (/private/var/folders/.../C)
+        user_temp_C = os.path.join(user_var_root, "C")
+        if os.path.isdir(user_temp_C) and not self._cancel_requested:
+            try:
+                with os.scandir(user_temp_C) as entries:
+                    for entry in entries:
+                        if self._cancel_requested:
+                            break
+                        if (
+                            entry.name.startswith(".")
+                            or entry.is_symlink()
+                            or self.app_detector.is_apple_system_folder(entry.name)
+                        ):
+                            continue
+                        try:
+                            size = get_entry_size(entry.path, self.is_cancelled)
+                            if size >= self.MIN_CACHE_LOG_BYTES:
+                                items.append(
+                                    ScanItem(
+                                        id=str(uuid.uuid4()),
+                                        name=f"{entry.name} (Caché Darwin)",
+                                        path=entry.path,
+                                        abbreviated_path=entry.path,
+                                        size_bytes=size,
+                                        module=ModuleType.CACHES_LOGS,
+                                        clean_strategy=CleanStrategy.DELETE_ITEM,
+                                        safety_level=SafetyLevel.SAFE,
+                                        safety_badge="🟢 100% Seguro borrar",
+                                        description="Caché temporal de aplicación en /private/var/folders/.../C. Se regenera sola si la aplicación la necesita.",
+                                        category_tag="Caché Darwin (/var/folders)",
+                                        selected=False,
+                                    )
+                                )
+                        except (PermissionError, FileNotFoundError, OSError):
+                            continue
+            except (PermissionError, FileNotFoundError, OSError):
+                pass
+
         return items
 
     def _scan_module_2_dev_junk(
@@ -212,6 +367,42 @@ class SystemDataScanner:
                 "~/.npm/_cacache",
                 "Node.js / npm",
                 "Copias descargadas de paquetes antiguos de Node.js (npm). 100% seguro borrar; no afecta a tus proyectos.",
+            ),
+            (
+                "NPX Cache (_npx)",
+                "~/.npm/_npx",
+                "Node.js / npx",
+                "Entornos y paquetes temporales descargados al ejecutar herramientas con 'npx' (~/.npm/_npx). 100% seguro borrar.",
+            ),
+            (
+                "Yarn Cache",
+                "~/Library/Caches/Yarn",
+                "Node.js / Yarn",
+                "Caché de paquetes descargados por el gestor Yarn. 100% seguro borrar.",
+            ),
+            (
+                "pnpm Store Cache",
+                "~/Library/pnpm/store",
+                "Node.js / pnpm",
+                "Almacén en caché de paquetes descargados por pnpm. 100% seguro borrar.",
+            ),
+            (
+                "Bun Install Cache",
+                "~/.bun/install/cache",
+                "Node.js / Bun",
+                "Caché de paquetes descargados por el runtime Bun. 100% seguro borrar.",
+            ),
+            (
+                "PyInstaller Build Cache",
+                "~/Library/Application Support/pyinstaller",
+                "Python / PyInstaller",
+                "Caché de binarios y bootloaders precompilados de PyInstaller. 100% seguro borrar.",
+            ),
+            (
+                "Python Bytecode Cache (com.apple.python)",
+                "~/Library/Caches/com.apple.python",
+                "Python / macOS",
+                "Archivos .pyc precompilados generados por el intérprete Python de macOS. 100% seguro borrar (se regeneran automáticamente).",
             ),
             (
                 "Gradle Cache (Java / Android)",
@@ -263,14 +454,16 @@ class SystemDataScanner:
             ),
         ]
         items: list[ScanItem] = []
+        covered_paths: set[str] = set()
 
         for idx, (label, raw_path, tag, desc) in enumerate(dev_targets):
             if self._cancel_requested:
                 break
             full_path = expand_home(raw_path)
+            covered_paths.add(os.path.realpath(full_path))
             if not os.path.exists(full_path):
                 continue
-            report(f"Calculando Desarrollo e IA: {label}...", 0.32 + 0.20 * ((idx + 1) / len(dev_targets)))
+            report(f"Calculando Desarrollo e IA: {label}...", 0.32 + 0.16 * ((idx + 1) / len(dev_targets)))
             size = fast_dir_size(full_path, self.is_cancelled)
             if size >= self.MIN_CACHE_LOG_BYTES:
                 items.append(
@@ -289,6 +482,47 @@ class SystemDataScanner:
                         selected=False,
                     )
                 )
+
+        # Dynamically scan all subdirectories inside ~/.cache so no dev/AI cache (e.g., prisma, antigravity, playwright, cypress) is missed
+        dot_cache_root = expand_home("~/.cache")
+        if os.path.isdir(dot_cache_root) and not self._cancel_requested:
+            try:
+                with os.scandir(dot_cache_root) as entries:
+                    for entry in entries:
+                        if self._cancel_requested:
+                            break
+                        if entry.name.startswith(".") or entry.is_symlink():
+                            continue
+                        real_sub = os.path.realpath(entry.path)
+                        if real_sub in covered_paths:
+                            continue
+                        try:
+                            size = get_entry_size(entry.path, self.is_cancelled)
+                            if size >= self.MIN_CACHE_LOG_BYTES:
+                                items.append(
+                                    ScanItem(
+                                        id=str(uuid.uuid4()),
+                                        name=f"~/.cache/{entry.name}",
+                                        path=entry.path,
+                                        abbreviated_path=abbreviate_path(entry.path),
+                                        size_bytes=size,
+                                        module=ModuleType.DEV_JUNK,
+                                        clean_strategy=CleanStrategy.DELETE_ITEM,
+                                        safety_level=SafetyLevel.SAFE,
+                                        safety_badge="🟢 100% Seguro borrar",
+                                        description=(
+                                            f"Caché de herramientas de desarrollo o IA en ~/.cache/{entry.name}. "
+                                            "100% seguro borrar; se vuelve a descargar si la herramienta lo necesita."
+                                        ),
+                                        category_tag="Caché (~/.cache)",
+                                        selected=False,
+                                    )
+                                )
+                        except (PermissionError, FileNotFoundError, OSError):
+                            continue
+            except (PermissionError, FileNotFoundError, OSError):
+                pass
+
         return items
 
     def _scan_module_3_app_remnants(
@@ -362,6 +596,7 @@ class SystemDataScanner:
             (".ollama", "~/.ollama", "Carpeta Oculta (~)"),
             (".lmstudio", "~/.lmstudio", "Carpeta Oculta (~)"),
             (".cursor", "~/.cursor", "Carpeta Oculta (~)"),
+            (".local/share/powershell", "~/.local/share/powershell", "Datos Locales (~/.local)"),
         ]
         for folder_key, raw_path, tag in hidden_app_folders:
             if self._cancel_requested:

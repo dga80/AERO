@@ -25,6 +25,9 @@ class SafeCleaner:
     PROTECTED_ROOTS = {
         os.path.realpath(expand_home("~")),
         os.path.realpath(expand_home("~/.cache")),
+        os.path.realpath(expand_home("~/.npm")),
+        os.path.realpath(expand_home("~/.local")),
+        os.path.realpath(expand_home("~/.local/share")),
         os.path.realpath(expand_home("~/.Trash")),
         os.path.realpath(expand_home("~/Library")),
         os.path.realpath(expand_home("~/Library/Caches")),

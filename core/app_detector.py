@@ -137,6 +137,16 @@ class AppDetector:
             ["antigravity", "antigravity ide"],
             ["com.google.antigravity"],
         ),
+        ".local/share/powershell": (
+            "Módulos y datos locales de Microsoft PowerShell (~/.local/share/powershell).",
+            ["powershell"],
+            ["com.microsoft.powershell"],
+        ),
+        ".local/share/uv": (
+            "Herramientas e instalaciones gestionadas de Python uv (~/.local/share/uv).",
+            ["uv"],
+            [],
+        ),
         "google": (
             "Perfiles, cachés y datos locales de Google Chrome.",
             ["google chrome"],
