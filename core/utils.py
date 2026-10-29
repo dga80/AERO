@@ -1,7 +1,51 @@
+from functools import lru_cache
 import os
 import shutil
 import subprocess
 from typing import Callable, Optional
+
+
+@lru_cache(maxsize=1)
+def get_chip_name() -> str:
+    """Returns a concise name for the Mac processor (e.g. 'Apple M1', 'Apple M3 Pro', 'Intel Core i7')."""
+    try:
+        brand = subprocess.check_output(
+            ["sysctl", "-n", "machdep.cpu.brand_string"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).strip()
+        if brand:
+            # Shorten verbose Intel strings like 'Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz'
+            if "Intel" in brand:
+                brand = brand.replace("(R)", "").replace("(TM)", "")
+                brand = brand.split("@")[0].replace("CPU", "").strip()
+                brand = " ".join(brand.split())
+            return brand
+    except Exception:
+        pass
+    return "macOS"
+
+
+@lru_cache(maxsize=1)
+def get_total_ram_bytes() -> int:
+    """Returns total physical RAM in bytes via `sysctl -n hw.memsize`."""
+    try:
+        out = subprocess.check_output(
+            ["sysctl", "-n", "hw.memsize"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).strip()
+        return int(out)
+    except Exception:
+        return 8 * (1024 ** 3)
+
+
+def get_total_ram_label() -> str:
+    """Returns a clean RAM capacity label like '8 GB' or '16 GB'."""
+    gb = round(get_total_ram_bytes() / (1024 ** 3))
+    return f"{max(1, gb)} GB"
 
 
 def expand_home(path: str) -> str:

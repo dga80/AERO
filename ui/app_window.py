@@ -12,7 +12,9 @@ from core.scanner import SystemDataScanner
 from core.utils import (
     empty_macos_trash,
     format_size,
+    get_chip_name,
     get_macos_trash_size,
+    get_total_ram_label,
     open_macos_trash,
     reveal_in_finder,
     run_quick_macos_optimizations,
@@ -235,7 +237,7 @@ class ConfirmEmptyTrashDialog(ctk.CTkToplevel):
 
 
 class AeroSystemCleanerApp(ctk.CTk):
-    """Main CustomTkinter application window for macOS System Data analysis, cleaning & M1 RAM optimization."""
+    """Main CustomTkinter application window for macOS System Data analysis, cleaning & RAM optimization."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -243,7 +245,10 @@ class AeroSystemCleanerApp(ctk.CTk):
         ctk.set_appearance_mode("Dark")
         ctk.set_default_color_theme("blue")
 
-        self.title("AERO — Limpiador APFS y Turbo RAM (macOS M1)")
+        self.chip_name = get_chip_name()
+        self.ram_label = get_total_ram_label()
+
+        self.title(f"AERO — Limpiador APFS y Turbo RAM ({self.chip_name})")
         self.geometry("1180x790")
         self.minsize(1040, 690)
         self.configure(fg_color=COLOR_BG_MAIN)
@@ -309,7 +314,7 @@ class AeroSystemCleanerApp(ctk.CTk):
 
         app_sub = ctk.CTkLabel(
             header_frame,
-            text="Limpiador APFS + Turbo RAM (M1)",
+            text=f"Limpiador APFS + Turbo RAM ({self.chip_name})",
             font=ctk.CTkFont(family="SF Pro Text", size=12),
             text_color=COLOR_TEXT_SECONDARY,
             anchor="w",
@@ -405,7 +410,7 @@ class AeroSystemCleanerApp(ctk.CTk):
 
             badge = ctk.CTkLabel(
                 row_frame,
-                text="8 GB M1" if is_ram else "0 B",
+                text=self.ram_label if is_ram else "0 B",
                 font=ctk.CTkFont(family="SF Pro Text", size=11, weight="bold"),
                 text_color=COLOR_SUCCESS_GREEN if is_ram else COLOR_TEXT_SECONDARY,
                 width=64,
@@ -640,7 +645,7 @@ class AeroSystemCleanerApp(ctk.CTk):
 
         self._render_empty_state(
             "Haz clic en «🔍 Analizar Datos del Sistema» para escanear tu disco APFS,\n"
-            "o haz clic en «🚀 6. Monitor y Turbo RAM» en el menú izquierdo para optimizar tus 8 GB de RAM en tiempo real."
+            f"o haz clic en «🚀 6. Monitor RAM, CPU y GPU» en el menú izquierdo para optimizar tus {self.ram_label} de RAM en tiempo real."
         )
 
     # -------------------------------------------------------------------------
@@ -748,7 +753,9 @@ class AeroSystemCleanerApp(ctk.CTk):
         self, render_when_done: bool = True, custom_status: Optional[str] = None
     ) -> None:
         if render_when_done and not custom_status:
-            self.status_label.configure(text="Analizando Memoria Unificada (8 GB), Swap y procesos activos...")
+            self.status_label.configure(
+                text=f"Analizando Memoria ({self.ram_label}), Swap y procesos activos..."
+            )
 
         def worker() -> None:
             health = RamOptimizer.get_ram_health()
@@ -922,7 +929,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         for widget in self.results_scroll.winfo_children():
             widget.destroy()
 
-        # Special Dedicated View for Module 6: Monitor y Turbo RAM (M1 8GB)
+        # Special Dedicated View for Module 6: Monitor y Turbo RAM
         if self.active_filter == ModuleType.RAM_MONITOR:
             self._render_ram_monitor_view()
             return
@@ -957,7 +964,7 @@ class AeroSystemCleanerApp(ctk.CTk):
             more_lbl.pack(pady=10)
 
     # -------------------------------------------------------------------------
-    # Module 6: Live RAM, CPU & GPU Telemetry View (Apple Silicon 8 GB)
+    # Module 6: Live RAM, CPU & GPU Telemetry View
     # -------------------------------------------------------------------------
     def _render_ram_monitor_view(self) -> None:
         self.count_label.configure(text=f"{len(self.ram_groups)} grupos de procesos activos")
@@ -991,7 +998,7 @@ class AeroSystemCleanerApp(ctk.CTk):
 
         ctk.CTkLabel(
             left_info,
-            text=f"CENTRO DE TELEMETRÍA EN VIVO • APPLE M1 ({format_size(health.total_ram_bytes)})",
+            text=f"CENTRO DE TELEMETRÍA EN VIVO • {self.chip_name.upper()} ({format_size(health.total_ram_bytes)})",
             font=ctk.CTkFont(family="SF Pro Text", size=11, weight="bold"),
             text_color=COLOR_TEXT_SECONDARY,
             anchor="w",
@@ -1073,7 +1080,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         self._create_telemetry_bento_card(
             parent=bento_grid,
             col=1,
-            title=f"⚡ CPU APPLE M1 ({health.cpu_cores} NÚCLEOS)",
+            title=f"⚡ CPU {self.chip_name.upper()} ({health.cpu_cores} NÚCLEOS)",
             main_value=f"{health.cpu_usage_pct}% Carga  (Load: {health.cpu_load_1m})",
             sub_value=f"Top CPU: {health.top_cpu_process}",
             progress=cpu_ratio,
@@ -1092,7 +1099,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         self._create_telemetry_bento_card(
             parent=bento_grid,
             col=2,
-            title="🎮 GPU INTEGRADA METAL (M1)",
+            title=f"🎮 GPU INTEGRADA METAL ({self.chip_name.upper()})",
             main_value=f"{health.gpu_device_pct}% Uso Motor Gráfico",
             sub_value=f"Renderer: {health.gpu_renderer_pct}% • Tiler: {health.gpu_tiler_pct}% • VRAM: {format_size(health.gpu_vram_bytes)}",
             progress=gpu_ratio,
@@ -1364,7 +1371,7 @@ class AeroSystemCleanerApp(ctk.CTk):
 
         ctk.CTkLabel(
             left_col,
-            text="CRONÓMETRO DE ARRANQUE Y AUDITORÍA DE INICIO DE SESIÓN (APPLE M1)",
+            text=f"CRONÓMETRO DE ARRANQUE Y AUDITORÍA DE INICIO DE SESIÓN ({self.chip_name.upper()})",
             font=ctk.CTkFont(family="SF Pro Text", size=11, weight="bold"),
             text_color=COLOR_TEXT_SECONDARY,
             anchor="w",

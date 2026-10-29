@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from core.utils import expand_home
+from core.utils import expand_home, get_chip_name, get_total_ram_label
 
 
 @dataclass
@@ -258,6 +258,7 @@ class BootDiagnostics:
             pass
 
         if reopen_enabled or has_relaunch_list:
+            ram_label = get_total_ram_label()
             return BootIssueCard(
                 id="reopen_windows",
                 title="Reapertura Automática de Aplicaciones al Iniciar Sesión",
@@ -266,7 +267,7 @@ class BootDiagnostics:
                 metric_text="TALLogoutSavesState Activo",
                 description=(
                     "macOS tiene activado reabrir automáticamente las aplicaciones previas (como Chrome con todas "
-                    "sus pestañas) en el mismo instante en que pones la contraseña, saturando los 8 GB de RAM."
+                    f"sus pestañas) en el mismo instante en que pones la contraseña, saturando tus {ram_label} de RAM."
                 ),
                 action_label="⚡ Desactivar Reapertura",
                 action_key="DISABLE_REOPEN_WINDOWS",
@@ -405,6 +406,7 @@ class BootDiagnostics:
             )
 
         vol_note = f"Discos montados: {', '.join(ext_volumes)}" if ext_volumes else "Sin discos externos lentos"
+        chip_name = get_chip_name()
         return BootIssueCard(
             id="spotlight_storm",
             title="Indexación de Spotlight y Volúmenes Externos USB",
@@ -412,7 +414,7 @@ class BootDiagnostics:
             status_badge="🟢 En Reposo",
             metric_text=f"{mds_cpu:.0f}% CPU • {vol_note}",
             description=(
-                "El motor de búsqueda Spotlight está tranquilo y no está bloqueando los núcleos del M1 "
+                f"El motor de búsqueda Spotlight está tranquilo y no está bloqueando los núcleos ({chip_name}) "
                 "ni escaneando masivamente entornos virtuales."
             ),
         )
@@ -426,10 +428,12 @@ class BootDiagnostics:
         except Exception:
             pass
 
+        current_user = os.path.basename(expand_home("~"))
+        ignored_users = {"Shared", "Guest", "loginwindow", ".localized", current_user}
         other_users: list[str] = []
         try:
             for u in os.listdir("/Users"):
-                if u not in ("Shared", "danidev", "loginwindow", ".localized") and not u.startswith("."):
+                if u not in ignored_users and not u.startswith("."):
                     if os.path.isdir(os.path.join("/Users", u)):
                         other_users.append(u)
         except Exception:

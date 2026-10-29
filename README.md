@@ -1,6 +1,6 @@
-# AERO macOS — Analizador APFS, Limpiador Seguro y Turbo RAM (M1)
+# AERO macOS — Analizador APFS, Limpiador Seguro y Turbo RAM
 
-**AERO** es una aplicación de escritorio moderna para **macOS** construida en Python con **CustomTkinter**, diseñada para analizar y limpiar de forma segura el almacenamiento de **«Datos del Sistema» (System Data)** en volúmenes APFS y optimizar el uso de **Memoria Unificada (RAM)** en equipos Apple Silicon (M1/M2/M3/M4).
+**AERO** es una aplicación de escritorio moderna para **macOS** construida en Python con **CustomTkinter**, diseñada para analizar y limpiar de forma segura el almacenamiento de **«Datos del Sistema» (System Data)** en volúmenes APFS y optimizar el uso de **Memoria Unificada (RAM)** en equipos Mac (Apple Silicon M1/M2/M3/M4 e Intel).
 
 ---
 

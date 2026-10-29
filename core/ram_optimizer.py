@@ -4,7 +4,7 @@ import signal
 import subprocess
 from dataclasses import dataclass
 
-from core.utils import format_size, run_quick_macos_optimizations
+from core.utils import format_size, get_chip_name, get_total_ram_bytes, run_quick_macos_optimizations
 
 
 @dataclass
@@ -41,7 +41,7 @@ class AppRamGroup:
 
 
 class RamOptimizer:
-    """Monitors Apple Silicon Unified Memory (8 GB), Swap usage, and groups multi-process apps
+    """Monitors macOS Unified Memory / RAM, Swap usage, and groups multi-process apps
     so non-technical users can see what is eating their RAM and safely free background daemons.
     """
 
@@ -96,7 +96,7 @@ class RamOptimizer:
         "Safari": "Navegador web de Apple.",
         "Siri AI": "Servicio de inteligencia del sistema de macOS.",
         "ControlCenter": "Barra de menús superior y Centro de Control de macOS.",
-        "MTLCompilerService": "Compilador temporal de shaders gráficos para la GPU del chip M1.",
+        "MTLCompilerService": "Compilador temporal de shaders gráficos para la GPU de tu Mac.",
         "mdworker_shared": "Indexador de búsqueda de Spotlight de macOS.",
         "mds_stores": "Base de datos de búsqueda rápida de Spotlight de macOS.",
         "SetStoreUpdateService": "Servicio interno del sistema de macOS.",
@@ -108,12 +108,8 @@ class RamOptimizer:
     @classmethod
     def get_ram_health(cls) -> RamHealthSnapshot:
         """Reads total RAM, memory_pressure, vm_stat, and vm.swapusage on macOS."""
-        total_ram = 8 * (1024 ** 3)
-        try:
-            out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True, timeout=2).strip()
-            total_ram = int(out)
-        except Exception:
-            pass
+        total_ram = get_total_ram_bytes()
+        chip_name = get_chip_name()
 
         swap_used = 0
         try:
@@ -167,7 +163,7 @@ class RamOptimizer:
             badge = f"🟢 Presión Baja / Óptima ({free_pct}% margen libre)"
             color = "green"
             explanation = (
-                f"Tu M1 de {format_size(total_ram)} respira con holgura. "
+                f"Tu Mac ({chip_name} • {format_size(total_ram)}) respira con holgura. "
                 f"RAM comprimida: {format_size(compressed_bytes)} • Swap en SSD: {format_size(swap_used)}."
             )
         elif free_pct >= 20 and swap_used < 2 * (1024 ** 3):
