@@ -16,10 +16,12 @@
      - 🟢 **App desinstalada (Resto huérfano — 100% Seguro borrar)**
      - 🔴 **App instalada actualmente en uso (Protegida / No borrar)**
    - **4. Descargas Pesadas y Time Machine**: Localiza archivos `> 500 MB` en `~/Downloads` (destacando `.dmg`, `.pkg`, `.zip`, `.iso`) y detecta instantáneas locales ocultas con `tmutil listlocalsnapshots /`.
-   - **5. Inicio y Optimización**: Detecta agentes de inicio huérfanos o rotos en `~/Library/LaunchAgents`, desactiva actualizadores fantasma en `launchctl` y permite regenerar la caché de miniaturas de QuickLook (`qlmanage -r cache`) y limpiar la caché DNS local (`dscacheutil -flushcache`).
-   - **🚀 6. Monitor y Turbo RAM (Especial Apple Silicon 8 GB)**:
-     - Semáforo en tiempo real de **Presión de Memoria Unificada** y uso de **Swap en SSD**.
-     - Agrupador inteligente de procesos (suma todos los `Helper / Renderer` de Chrome, Antigravity, etc. en una sola fila legible).
+   - **⚡ 5. Arranque y Optimización (Boot & Login Profiler)**:
+     - **Cronómetro de Arranque en 3 fases**: Mide al segundo el tiempo de `Kernel ➔ LoginWindow`, `Contraseña ➔ Escritorio (Finder/Dock)` y tiempo activo.
+     - **Auditoría Automática de Frenos de Arranque**: Detecta sobrecarga de archivos en el Escritorio (`~/Desktop`), reapertura forzada de sesión (`TALLogoutSavesState`), extensiones pesadas inyectadas en el Finder (`pluginkit`, como Adobe CoreSync), demonios de terceros en `launchctl`, tormentas de indexación de Spotlight (`mds_stores` / `mdworker_shared`) y estado de FileVault/Preboot con botones de solución en 1 clic.
+   - **🚀 6. Monitor RAM, CPU y GPU (Telemetría en Vivo Apple Silicon)**:
+     - **Panel Bento de 3 Columnas**: Monitoreo en tiempo real de **Memoria Unificada y Swap**, **Carga de CPU (8 núcleos + proceso top)** y **Uso de GPU Integrada Metal (`IOAccelerator`: Motor gráfico, Renderer, Tiler y VRAM)** sin requerir permisos root.
+     - Agrupador inteligente de procesos (suma todos los `Helper / Renderer` y muestra etiquetas de consumo de RAM y `% CPU` en vivo).
      - Botón **«🚀 Activar Modo Turbo RAM»** para reciclar demonios en segundo plano que acumulan memoria (`mediaanalysisd`, `photoanalysisd`, `AppleSpell`, `Weather`, `Home`, demonios de Adobe, etc.) sin cerrar tus apps de trabajo.
 
 3. **Seguridad Blindada para macOS**:

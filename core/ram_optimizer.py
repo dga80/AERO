@@ -17,6 +17,14 @@ class RamHealthSnapshot:
     status_badge: str
     status_color: str  # "green", "amber", "red"
     explanation: str
+    cpu_load_1m: float = 0.0
+    cpu_cores: int = 8
+    cpu_usage_pct: int = 0
+    gpu_device_pct: int = 0
+    gpu_renderer_pct: int = 0
+    gpu_tiler_pct: int = 0
+    gpu_vram_bytes: int = 0
+    top_cpu_process: str = ""
 
 
 @dataclass
@@ -29,6 +37,7 @@ class AppRamGroup:
     is_recyclable_daemon: bool
     is_protected: bool
     description: str
+    total_cpu_pct: float = 0.0
 
 
 class RamOptimizer:
@@ -186,31 +195,96 @@ class RamOptimizer:
             status_badge=badge,
             status_color=color,
             explanation=explanation,
+            **cls._read_cpu_and_gpu_metrics(),
         )
 
     @classmethod
+    def _read_cpu_and_gpu_metrics(cls) -> dict:
+        """Reads Apple Silicon CPU load average, core count, and live IOAccelerator GPU telemetry."""
+        cpu_cores = os.cpu_count() or 8
+        load_1m = 0.0
+        try:
+            load_1m, _, _ = os.getloadavg()
+        except Exception:
+            pass
+
+        gpu_dev = 0
+        gpu_rend = 0
+        gpu_tiler = 0
+        gpu_vram = 0
+        try:
+            io_out = subprocess.check_output(
+                ["ioreg", "-r", "-d", "1", "-c", "IOAccelerator"], text=True, timeout=2
+            )
+            m_dev = re.search(r'"Device Utilization %"\s*=\s*(\d+)', io_out)
+            m_rend = re.search(r'"Renderer Utilization %"\s*=\s*(\d+)', io_out)
+            m_til = re.search(r'"Tiler Utilization %"\s*=\s*(\d+)', io_out)
+            m_mem = re.search(r'"In use system memory"\s*=\s*(\d+)', io_out)
+            if m_dev:
+                gpu_dev = int(m_dev.group(1))
+            if m_rend:
+                gpu_rend = int(m_rend.group(1))
+            if m_til:
+                gpu_tiler = int(m_til.group(1))
+            if m_mem:
+                gpu_vram = int(m_mem.group(1))
+        except Exception:
+            pass
+
+        top_cpu_name = "En reposo"
+        total_cpu_sum = 0.0
+        try:
+            ps_out = subprocess.check_output(["ps", "-axo", "pcpu=,comm="], text=True, timeout=2)
+            best_cpu = 0.0
+            for line in ps_out.splitlines():
+                parts = line.strip().split(None, 1)
+                if len(parts) < 2:
+                    continue
+                val = float(parts[0].replace(",", "."))
+                total_cpu_sum += val
+                if val > best_cpu:
+                    best_cpu = val
+                    g_name, _ = cls._resolve_group_name(parts[1].strip())
+                    top_cpu_name = f"{g_name} ({val:.0f}%)"
+        except Exception:
+            pass
+
+        cpu_pct = min(100, max(1, int(round(total_cpu_sum / max(1, cpu_cores)))))
+        return {
+            "cpu_load_1m": round(load_1m, 2),
+            "cpu_cores": cpu_cores,
+            "cpu_usage_pct": cpu_pct,
+            "gpu_device_pct": gpu_dev,
+            "gpu_renderer_pct": gpu_rend,
+            "gpu_tiler_pct": gpu_tiler,
+            "gpu_vram_bytes": gpu_vram,
+            "top_cpu_process": top_cpu_name,
+        }
+
+    @classmethod
     def get_top_ram_groups(cls, limit: int = 18) -> list[AppRamGroup]:
-        """Lists running processes via `ps -axo pid,rss,comm` and groups helpers under their parent App."""
+        """Lists running processes via `ps -axo pid,rss,pcpu,comm` and groups helpers under their parent App."""
         groups: dict[str, AppRamGroup] = {}
         my_pid = os.getpid()
 
         try:
-            out = subprocess.check_output(["ps", "-axo", "pid=,rss=,comm="], text=True, timeout=4)
+            out = subprocess.check_output(["ps", "-axo", "pid=,rss=,pcpu=,comm="], text=True, timeout=4)
         except Exception:
             return []
 
         for line in out.splitlines():
-            parts = line.strip().split(None, 2)
-            if len(parts) < 3:
+            parts = line.strip().split(None, 3)
+            if len(parts) < 4:
                 continue
             try:
                 pid = int(parts[0])
                 rss_kb = int(parts[1])
-                comm = parts[2].strip()
+                cpu_val = float(parts[2].replace(",", "."))
+                comm = parts[3].strip()
             except ValueError:
                 continue
 
-            if pid == my_pid or rss_kb < 2048:
+            if pid == my_pid or (rss_kb < 2048 and cpu_val < 5.0):
                 continue
 
             rss_bytes = rss_kb * 1024
@@ -234,12 +308,14 @@ class RamOptimizer:
                     is_recyclable_daemon=is_recyclable,
                     is_protected=is_protected,
                     description=desc,
+                    total_cpu_pct=round(cpu_val, 1),
                 )
             else:
                 g = groups[group_name]
                 g.total_rss_bytes += rss_bytes
                 g.process_count += 1
                 g.pids.append(pid)
+                g.total_cpu_pct = round(g.total_cpu_pct + cpu_val, 1)
 
         sorted_groups = sorted(groups.values(), key=lambda x: x.total_rss_bytes, reverse=True)
         return sorted_groups[:limit]

@@ -3,6 +3,7 @@ import threading
 from typing import Callable, Optional
 import customtkinter as ctk
 
+from core.boot_diagnostics import BootDiagnostics, BootIssueCard, BootProfileReport
 from core.cleaner import CleanResult, SafeCleaner
 from core.models import ModuleType, SafetyLevel, ScanItem, ScanSummary
 from core.ram_optimizer import AppRamGroup, RamHealthSnapshot, RamOptimizer
@@ -256,6 +257,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         self.trash_bytes: int = 0
         self.ram_health: Optional[RamHealthSnapshot] = None
         self.ram_groups: list[AppRamGroup] = []
+        self.boot_report: Optional[BootProfileReport] = None
 
         self.active_filter: ModuleType = ModuleType.ALL
         self.checkbox_vars: dict[str, ctk.BooleanVar] = {}
@@ -264,8 +266,9 @@ class AeroSystemCleanerApp(ctk.CTk):
 
         self._build_layout()
         self._poll_ui_queue()
-        # Load initial RAM badge in background
+        # Load initial RAM & Boot Telemetry in background
         self._refresh_ram_data_async(render_when_done=False)
+        self._refresh_boot_diagnostics_async(render_when_done=False)
 
     # -------------------------------------------------------------------------
     # Layout Construction
@@ -367,13 +370,13 @@ class AeroSystemCleanerApp(ctk.CTk):
         ).pack(fill="x", padx=20, pady=(2, 3))
 
         modules_meta = [
-            (ModuleType.ALL, "Todos los Resultados"),
-            (ModuleType.CACHES_LOGS, "1. Cachés y Registros"),
-            (ModuleType.DEV_JUNK, "2. Desarrollo e IA (~/.cache)"),
-            (ModuleType.APP_REMNANTS, "3. Restos de Apps"),
-            (ModuleType.DOWNLOADS_TM, "4. Descargas y Time Machine"),
-            (ModuleType.OPTIMIZATION, "5. Inicio y Optimización"),
-            (ModuleType.RAM_MONITOR, "🚀 6. Monitor y Turbo RAM"),
+            (ModuleType.ALL, "✨ Todos los Resultados"),
+            (ModuleType.CACHES_LOGS, "🧹 1. Cachés y Registros"),
+            (ModuleType.DEV_JUNK, "💻 2. Desarrollo e IA"),
+            (ModuleType.APP_REMNANTS, "📦 3. Restos de Apps"),
+            (ModuleType.DOWNLOADS_TM, "📥 4. Descargas y Time Machine"),
+            (ModuleType.OPTIMIZATION, "⚡ 5. Arranque y Optimización"),
+            (ModuleType.RAM_MONITOR, "🚀 6. Monitor RAM, CPU y GPU"),
         ]
 
         for mod, title in modules_meta:
@@ -669,10 +672,53 @@ class AeroSystemCleanerApp(ctk.CTk):
                         self.status_label.configure(text=custom_msg)
                     if should_render and self.active_filter == ModuleType.RAM_MONITOR:
                         self._render_results_list()
+                elif msg_type == "BOOT_DIAG_READY":
+                    report, should_render, custom_msg = payload
+                    self.boot_report = report
+                    opt_badge = self.nav_badges.get(ModuleType.OPTIMIZATION)
+                    if opt_badge and report and not self.all_items:
+                        opt_badge.configure(
+                            text=f"~{report.total_boot_sec}s",
+                            text_color=(
+                                COLOR_SUCCESS_GREEN
+                                if report.overall_status == "green"
+                                else COLOR_WARNING_AMBER
+                                if report.overall_status == "amber"
+                                else COLOR_DANGER_RED
+                            ),
+                        )
+                    if custom_msg:
+                        self.status_label.configure(text=custom_msg)
+                    if should_render and self.active_filter == ModuleType.OPTIMIZATION:
+                        self._render_results_list()
         except queue.Empty:
             pass
         finally:
             self.after(60, self._poll_ui_queue)
+
+    def _refresh_boot_diagnostics_async(
+        self, render_when_done: bool = True, custom_status: Optional[str] = None
+    ) -> None:
+        if render_when_done and not custom_status:
+            self.status_label.configure(
+                text="Analizando tiempos de arranque (Kernel -> LoginWindow -> Finder), demonios y Spotlight..."
+            )
+
+        def worker() -> None:
+            report = BootDiagnostics.run_diagnostics()
+            self.ui_queue.put(("BOOT_DIAG_READY", (report, render_when_done, custom_status)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _run_boot_fix_action_async(self, action_key: str) -> None:
+        self.status_label.configure(text="Aplicando corrección de arranque y optimizando configuración...")
+
+        def worker() -> None:
+            msg = BootDiagnostics.execute_fix(action_key)
+            report = BootDiagnostics.run_diagnostics()
+            self.ui_queue.put(("BOOT_DIAG_READY", (report, True, msg)))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _refresh_ram_data_async(
         self, render_when_done: bool = True, custom_status: Optional[str] = None
@@ -825,6 +871,8 @@ class AeroSystemCleanerApp(ctk.CTk):
 
         if module == ModuleType.RAM_MONITOR:
             self._refresh_ram_data_async(render_when_done=True)
+        elif module == ModuleType.OPTIMIZATION:
+            self._refresh_boot_diagnostics_async(render_when_done=True)
         else:
             self._render_results_list()
 
@@ -862,6 +910,8 @@ class AeroSystemCleanerApp(ctk.CTk):
             self._render_tm_info_banner(self.results_scroll)
         elif self.active_filter == ModuleType.OPTIMIZATION:
             self._render_optimization_banner(self.results_scroll)
+            if not filtered:
+                return
 
         if not filtered:
             self._render_empty_state(
@@ -883,23 +933,23 @@ class AeroSystemCleanerApp(ctk.CTk):
             more_lbl.pack(pady=10)
 
     # -------------------------------------------------------------------------
-    # Module 6: Live RAM Monitor & Turbo Boost View (Apple Silicon 8 GB)
+    # Module 6: Live RAM, CPU & GPU Telemetry View (Apple Silicon 8 GB)
     # -------------------------------------------------------------------------
     def _render_ram_monitor_view(self) -> None:
-        self.count_label.configure(text=f"{len(self.ram_groups)} grupos de procesos en RAM")
+        self.count_label.configure(text=f"{len(self.ram_groups)} grupos de procesos activos")
 
         health = self.ram_health or RamOptimizer.get_ram_health()
         if health.status_color == "green":
             accent = COLOR_SUCCESS_GREEN
-            bg_tint = "#182D22"
+            bg_tint = "#162920"
         elif health.status_color == "amber":
             accent = COLOR_WARNING_AMBER
-            bg_tint = "#332512"
+            bg_tint = "#302310"
         else:
             accent = COLOR_DANGER_RED
-            bg_tint = "#381B1A"
+            bg_tint = "#361918"
 
-        # Top RAM Health & Turbo Boost Hero Card
+        # Top Unified Hero Banner
         hero = ctk.CTkFrame(
             self.results_scroll,
             fg_color=bg_tint,
@@ -907,17 +957,17 @@ class AeroSystemCleanerApp(ctk.CTk):
             border_width=1,
             border_color=accent,
         )
-        hero.pack(fill="x", padx=8, pady=(6, 12))
+        hero.pack(fill="x", padx=8, pady=(6, 10))
 
         top_row = ctk.CTkFrame(hero, fg_color="transparent")
-        top_row.pack(fill="x", padx=16, pady=(14, 6))
+        top_row.pack(fill="x", padx=16, pady=(14, 12))
 
         left_info = ctk.CTkFrame(top_row, fg_color="transparent")
         left_info.pack(side="left", fill="x", expand=True)
 
         ctk.CTkLabel(
             left_info,
-            text=f"MEMORIA UNIFICADA APPLE M1 ({format_size(health.total_ram_bytes)})",
+            text=f"CENTRO DE TELEMETRÍA EN VIVO • APPLE M1 ({format_size(health.total_ram_bytes)})",
             font=ctk.CTkFont(family="SF Pro Text", size=11, weight="bold"),
             text_color=COLOR_TEXT_SECONDARY,
             anchor="w",
@@ -941,7 +991,6 @@ class AeroSystemCleanerApp(ctk.CTk):
             anchor="w",
         ).pack(fill="x")
 
-        # Right Action Buttons inside Hero
         btn_col = ctk.CTkFrame(top_row, fg_color="transparent")
         btn_col.pack(side="right", padx=(10, 0))
 
@@ -960,7 +1009,7 @@ class AeroSystemCleanerApp(ctk.CTk):
 
         ctk.CTkButton(
             btn_col,
-            text="🔄 Actualizar Monitor",
+            text="🔄 Actualizar Telemetría",
             font=ctk.CTkFont(family="SF Pro Text", size=12),
             fg_color="#2E343B",
             hover_color="#3B424B",
@@ -971,19 +1020,128 @@ class AeroSystemCleanerApp(ctk.CTk):
             command=lambda: self._refresh_ram_data_async(render_when_done=True),
         ).pack()
 
+        # 3-Column Bento Grid: RAM | CPU | GPU
+        bento_grid = ctk.CTkFrame(self.results_scroll, fg_color="transparent")
+        bento_grid.pack(fill="x", padx=8, pady=(0, 12))
+        bento_grid.grid_columnconfigure((0, 1, 2), weight=1, uniform="bento")
+
+        # Card 1: RAM & Swap
+        ram_used_ratio = min(1.0, max(0.05, (100 - health.free_percentage) / 100.0))
+        self._create_telemetry_bento_card(
+            parent=bento_grid,
+            col=0,
+            title="🧠 MEMORIA UNIFICADA & SWAP",
+            main_value=f"{format_size(health.used_ram_bytes)} / {format_size(health.total_ram_bytes)}",
+            sub_value=f"Comprimida: {format_size(health.compressed_ram_bytes)} • Swap: {format_size(health.swap_used_bytes)}",
+            progress=ram_used_ratio,
+            bar_color=accent,
+        )
+
+        # Card 2: CPU Load & Cores
+        cpu_ratio = min(1.0, max(0.04, health.cpu_usage_pct / 100.0))
+        cpu_color = (
+            COLOR_DANGER_RED
+            if health.cpu_usage_pct >= 75 or health.cpu_load_1m >= 8.0
+            else COLOR_WARNING_AMBER
+            if health.cpu_usage_pct >= 40 or health.cpu_load_1m >= 4.0
+            else COLOR_ACCENT_BLUE
+        )
+        self._create_telemetry_bento_card(
+            parent=bento_grid,
+            col=1,
+            title=f"⚡ CPU APPLE M1 ({health.cpu_cores} NÚCLEOS)",
+            main_value=f"{health.cpu_usage_pct}% Carga  (Load: {health.cpu_load_1m})",
+            sub_value=f"Top CPU: {health.top_cpu_process}",
+            progress=cpu_ratio,
+            bar_color=cpu_color,
+        )
+
+        # Card 3: GPU IOAccelerator
+        gpu_ratio = min(1.0, max(0.03, health.gpu_device_pct / 100.0))
+        gpu_color = (
+            COLOR_DANGER_RED
+            if health.gpu_device_pct >= 80
+            else COLOR_WARNING_AMBER
+            if health.gpu_device_pct >= 45
+            else "#BF5AF2"
+        )
+        self._create_telemetry_bento_card(
+            parent=bento_grid,
+            col=2,
+            title="🎮 GPU INTEGRADA METAL (M1)",
+            main_value=f"{health.gpu_device_pct}% Uso Motor Gráfico",
+            sub_value=f"Renderer: {health.gpu_renderer_pct}% • Tiler: {health.gpu_tiler_pct}% • VRAM: {format_size(health.gpu_vram_bytes)}",
+            progress=gpu_ratio,
+            bar_color=gpu_color,
+        )
+
         # Section subtitle
         ctk.CTkLabel(
             self.results_scroll,
             text=(
-                "TOP APLICACIONES Y PROCESOS EN TU RAM AHORA MISMO (Agrupados automáticamente):"
+                "TOP APLICACIONES Y DEMONIOS EN SEGUNDO PLANO (Agrupados por consumo de RAM y CPU):"
             ),
             font=ctk.CTkFont(family="SF Pro Text", size=11, weight="bold"),
             text_color=COLOR_TEXT_SECONDARY,
             anchor="w",
-        ).pack(fill="x", padx=12, pady=(4, 4))
+        ).pack(fill="x", padx=12, pady=(2, 4))
 
         for grp in self.ram_groups:
             self._create_ram_group_row(self.results_scroll, grp)
+
+    def _create_telemetry_bento_card(
+        self,
+        parent: ctk.CTkFrame,
+        col: int,
+        title: str,
+        main_value: str,
+        sub_value: str,
+        progress: float,
+        bar_color: str,
+    ) -> None:
+        pad_x = (0, 6) if col == 0 else (6, 6) if col == 1 else (6, 0)
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=COLOR_BG_CARD,
+            corner_radius=10,
+            border_width=1,
+            border_color=COLOR_BORDER,
+        )
+        card.grid(row=0, column=col, sticky="nsew", padx=pad_x, pady=2)
+
+        ctk.CTkLabel(
+            card,
+            text=title,
+            font=ctk.CTkFont(family="SF Pro Text", size=10, weight="bold"),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        ).pack(fill="x", padx=14, pady=(10, 2))
+
+        ctk.CTkLabel(
+            card,
+            text=main_value,
+            font=ctk.CTkFont(family="SF Pro Display", size=16, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY,
+            anchor="w",
+        ).pack(fill="x", padx=14)
+
+        bar = ctk.CTkProgressBar(
+            card,
+            height=6,
+            corner_radius=3,
+            progress_color=bar_color,
+            fg_color="#18181C",
+        )
+        bar.pack(fill="x", padx=14, pady=(6, 6))
+        bar.set(progress)
+
+        ctk.CTkLabel(
+            card,
+            text=sub_value,
+            font=ctk.CTkFont(family="SF Pro Text", size=11),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        ).pack(fill="x", padx=14, pady=(0, 10))
 
     def _create_ram_group_row(self, parent: ctk.CTkScrollableFrame, grp: AppRamGroup) -> None:
         if grp.is_recyclable_daemon:
@@ -1048,6 +1206,18 @@ class AeroSystemCleanerApp(ctk.CTk):
             text_color=pill_fg,
             corner_radius=6,
         ).pack(side="left", padx=(6, 0))
+
+        if grp.total_cpu_pct >= 1.0:
+            cpu_pill_bg = "#3D1C1A" if grp.total_cpu_pct >= 25.0 else "#222E3D"
+            cpu_pill_fg = "#FF8A80" if grp.total_cpu_pct >= 25.0 else COLOR_ACCENT_BLUE
+            ctk.CTkLabel(
+                top_line,
+                text=f"  ⚡ CPU {grp.total_cpu_pct:.0f}%  ",
+                font=ctk.CTkFont(family="SF Pro Text", size=11, weight="bold"),
+                fg_color=cpu_pill_bg,
+                text_color=cpu_pill_fg,
+                corner_radius=6,
+            ).pack(side="left", padx=(6, 0))
 
         ctk.CTkLabel(
             info_frame,
@@ -1139,51 +1309,229 @@ class AeroSystemCleanerApp(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _render_optimization_banner(self, parent: ctk.CTkScrollableFrame) -> None:
-        banner = ctk.CTkFrame(
-            parent,
-            fg_color="#1B2A38",
-            corner_radius=10,
-            border_width=1,
-            border_color=COLOR_ACCENT_BLUE,
-        )
-        banner.pack(fill="x", padx=8, pady=(6, 10))
+        report = self.boot_report or BootDiagnostics.run_diagnostics()
+        self.boot_report = report
 
-        left = ctk.CTkFrame(banner, fg_color="transparent")
-        left.pack(side="left", fill="x", expand=True, padx=14, pady=10)
+        if report.overall_status == "green":
+            accent = COLOR_SUCCESS_GREEN
+            bg_tint = "#162920"
+        elif report.overall_status == "amber":
+            accent = COLOR_WARNING_AMBER
+            bg_tint = "#302310"
+        else:
+            accent = COLOR_DANGER_RED
+            bg_tint = "#361918"
+
+        # 1. Boot Timeline Hero Card
+        hero = ctk.CTkFrame(
+            parent,
+            fg_color=bg_tint,
+            corner_radius=12,
+            border_width=1,
+            border_color=accent,
+        )
+        hero.pack(fill="x", padx=8, pady=(6, 10))
+
+        top_row = ctk.CTkFrame(hero, fg_color="transparent")
+        top_row.pack(fill="x", padx=16, pady=(14, 12))
+
+        left_col = ctk.CTkFrame(top_row, fg_color="transparent")
+        left_col.pack(side="left", fill="x", expand=True)
 
         ctk.CTkLabel(
-            left,
-            text="⚡ Optimización Rápida de macOS (Miniaturas Finder y Caché DNS)",
-            font=ctk.CTkFont(family="SF Pro Text", size=13, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY,
+            left_col,
+            text="CRONÓMETRO DE ARRANQUE Y AUDITORÍA DE INICIO DE SESIÓN (APPLE M1)",
+            font=ctk.CTkFont(family="SF Pro Text", size=11, weight="bold"),
+            text_color=COLOR_TEXT_SECONDARY,
             anchor="w",
         ).pack(fill="x")
 
         ctk.CTkLabel(
-            left,
-            text=(
-                "Regenera la caché de iconos/miniaturas de QuickLook (`qlmanage -r cache`) y limpia "
-                "la caché DNS local (`dscacheutil -flushcache`) si notas el Finder o la red lentos."
-            ),
-            font=ctk.CTkFont(family="SF Pro Text", size=11),
-            text_color=COLOR_TEXT_SECONDARY,
-            justify="left",
-            wraplength=520,
+            left_col,
+            text=report.overall_badge,
+            font=ctk.CTkFont(family="SF Pro Display", size=20, weight="bold"),
+            text_color=accent,
             anchor="w",
-        ).pack(fill="x", pady=(2, 0))
+        ).pack(fill="x", pady=(2, 2))
+
+        ctk.CTkLabel(
+            left_col,
+            text=report.overall_summary,
+            font=ctk.CTkFont(family="SF Pro Text", size=12),
+            text_color=COLOR_TEXT_PRIMARY,
+            justify="left",
+            wraplength=510,
+            anchor="w",
+        ).pack(fill="x")
+
+        right_col = ctk.CTkFrame(top_row, fg_color="transparent")
+        right_col.pack(side="right", padx=(10, 0))
 
         ctk.CTkButton(
-            banner,
+            right_col,
             text="⚡ Optimizar Finder y DNS",
             font=ctk.CTkFont(family="SF Pro Text", size=12, weight="bold"),
             fg_color=COLOR_ACCENT_BLUE,
             hover_color=COLOR_ACCENT_BLUE_HOVER,
             text_color="#FFFFFF",
-            width=190,
+            width=205,
             height=34,
             corner_radius=8,
             command=self._run_quick_optimizations_async,
-        ).pack(side="right", padx=14, pady=10)
+        ).pack(pady=(0, 6))
+
+        ctk.CTkButton(
+            right_col,
+            text="🔄 Re-auditar Arranque",
+            font=ctk.CTkFont(family="SF Pro Text", size=12),
+            fg_color="#2E343B",
+            hover_color="#3B424B",
+            text_color=COLOR_TEXT_PRIMARY,
+            width=205,
+            height=29,
+            corner_radius=7,
+            command=lambda: self._refresh_boot_diagnostics_async(render_when_done=True),
+        ).pack()
+
+        # 2. Boot Phases 3-Column Strip
+        phases_grid = ctk.CTkFrame(parent, fg_color="transparent")
+        phases_grid.pack(fill="x", padx=8, pady=(0, 10))
+        phases_grid.grid_columnconfigure((0, 1, 2), weight=1, uniform="boot_phases")
+
+        self._create_telemetry_bento_card(
+            parent=phases_grid,
+            col=0,
+            title="1️⃣ FASE KERNEL ➔ LOGINWINDOW",
+            main_value=f"{report.kernel_to_login_sec} seg",
+            sub_value="Arranque APFS, drivers y demonios base",
+            progress=min(1.0, max(0.08, report.kernel_to_login_sec / 45.0)),
+            bar_color=COLOR_SUCCESS_GREEN if report.kernel_to_login_sec <= 22 else COLOR_WARNING_AMBER,
+        )
+
+        self._create_telemetry_bento_card(
+            parent=phases_grid,
+            col=1,
+            title="2️⃣ FASE CONTRASEÑA ➔ ESCRITORIO",
+            main_value=f"{report.login_to_desktop_sec} seg",
+            sub_value="Carga de Dock, Finder y perfil de usuario",
+            progress=min(1.0, max(0.08, report.login_to_desktop_sec / 25.0)),
+            bar_color=COLOR_SUCCESS_GREEN if report.login_to_desktop_sec <= 8 else COLOR_DANGER_RED,
+        )
+
+        self._create_telemetry_bento_card(
+            parent=phases_grid,
+            col=2,
+            title="⏱️ TIEMPO ACTIVO DESDE ARRANQUE",
+            main_value=report.uptime_str,
+            sub_value=f"Total arranque medido: ~{report.total_boot_sec}s",
+            progress=0.35,
+            bar_color=COLOR_ACCENT_BLUE,
+        )
+
+        # 3. Diagnostic Cards List
+        ctk.CTkLabel(
+            parent,
+            text="AUDITORÍA DE FRENOS DE ARRANQUE Y ACTIVIDAD EN SEGUNDO PLANO:",
+            font=ctk.CTkFont(family="SF Pro Text", size=11, weight="bold"),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        ).pack(fill="x", padx=12, pady=(2, 4))
+
+        for b_card in report.cards:
+            self._create_boot_issue_card(parent, b_card)
+
+        filtered = self._get_filtered_items()
+        if filtered:
+            ctk.CTkLabel(
+                parent,
+                text="ARCHIVOS Y CACHÉS DE ESTADO DE VENTANAS EN DISCO:",
+                font=ctk.CTkFont(family="SF Pro Text", size=11, weight="bold"),
+                text_color=COLOR_TEXT_SECONDARY,
+                anchor="w",
+            ).pack(fill="x", padx=12, pady=(10, 4))
+
+    def _create_boot_issue_card(self, parent: ctk.CTkScrollableFrame, item: BootIssueCard) -> None:
+        if item.status == "ok":
+            border_col = "#244A32"
+            pill_bg = "#1B3B28"
+            pill_fg = COLOR_SUCCESS_GREEN
+        elif item.status == "warn":
+            border_col = "#5E4318"
+            pill_bg = "#3A2810"
+            pill_fg = COLOR_WARNING_AMBER
+        else:
+            border_col = "#7A2E2A"
+            pill_bg = "#3D1C1A"
+            pill_fg = "#FF8A80"
+
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=COLOR_BG_CARD,
+            corner_radius=10,
+            border_width=1,
+            border_color=border_col,
+        )
+        card.pack(fill="x", padx=8, pady=4)
+        card.grid_columnconfigure(0, weight=1)
+
+        info_frame = ctk.CTkFrame(card, fg_color="transparent")
+        info_frame.grid(row=0, column=0, padx=14, pady=10, sticky="ew")
+
+        top_line = ctk.CTkFrame(info_frame, fg_color="transparent")
+        top_line.pack(fill="x", anchor="w")
+
+        ctk.CTkLabel(
+            top_line,
+            text=item.title,
+            font=ctk.CTkFont(family="SF Pro Text", size=13, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY,
+            anchor="w",
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            top_line,
+            text=f"  {item.status_badge}  ",
+            font=ctk.CTkFont(family="SF Pro Text", size=11, weight="bold"),
+            fg_color=pill_bg,
+            text_color=pill_fg,
+            corner_radius=6,
+        ).pack(side="left", padx=(8, 0))
+
+        ctk.CTkLabel(
+            top_line,
+            text=f"  {item.metric_text}  ",
+            font=ctk.CTkFont(family="SF Pro Text", size=11),
+            fg_color="#32323A",
+            text_color=COLOR_TEXT_SECONDARY,
+            corner_radius=6,
+        ).pack(side="left", padx=(6, 0))
+
+        ctk.CTkLabel(
+            info_frame,
+            text=item.description,
+            font=ctk.CTkFont(family="SF Pro Text", size=12),
+            text_color="#D0D0D6",
+            justify="left",
+            wraplength=540,
+            anchor="w",
+        ).pack(fill="x", pady=(4, 0))
+
+        if item.action_label and item.action_key:
+            right_frame = ctk.CTkFrame(card, fg_color="transparent")
+            right_frame.grid(row=0, column=1, padx=(8, 14), pady=10, sticky="e")
+
+            ctk.CTkButton(
+                right_frame,
+                text=item.action_label,
+                font=ctk.CTkFont(family="SF Pro Text", size=12, weight="bold"),
+                fg_color=COLOR_ACCENT_BLUE if item.status != "crit" else COLOR_DANGER_RED,
+                hover_color=COLOR_ACCENT_BLUE_HOVER if item.status != "crit" else COLOR_DANGER_RED_HOVER,
+                text_color="#FFFFFF",
+                width=185,
+                height=32,
+                corner_radius=7,
+                command=lambda k=item.action_key: self._run_boot_fix_action_async(k),
+            ).pack(side="right")
 
     def _run_quick_optimizations_async(self) -> None:
         self.status_label.configure(text="Ejecutando optimización de QuickLook y caché DNS...")
