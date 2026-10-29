@@ -1,5 +1,6 @@
 import queue
 import threading
+from datetime import datetime
 from typing import Callable, Optional
 import customtkinter as ctk
 
@@ -660,7 +661,16 @@ class AeroSystemCleanerApp(ctk.CTk):
                 elif msg_type == "EMPTY_TRASH_DONE":
                     self._on_empty_trash_complete(payload)
                 elif msg_type == "QUICK_OPT_DONE":
-                    self.status_label.configure(text=payload)
+                    self.status_label.configure(text=payload, text_color=COLOR_SUCCESS_GREEN)
+                    self.progress_bar.set(1.0)
+                    if hasattr(self, "quick_opt_btn") and self.quick_opt_btn.winfo_exists():
+                        self.quick_opt_btn.configure(
+                            state="normal",
+                            text="✓ Finder y DNS Optimizados",
+                            fg_color="#1F3D2B",
+                            hover_color="#28523A",
+                            text_color=COLOR_SUCCESS_GREEN,
+                        )
                 elif msg_type == "RAM_DATA_READY":
                     health, groups, should_render, custom_msg = payload
                     self.ram_health = health
@@ -669,7 +679,7 @@ class AeroSystemCleanerApp(ctk.CTk):
                     if ram_badge and health:
                         ram_badge.configure(text=f"{health.free_percentage}% libre")
                     if custom_msg:
-                        self.status_label.configure(text=custom_msg)
+                        self.status_label.configure(text=custom_msg, text_color=COLOR_SUCCESS_GREEN)
                     if should_render and self.active_filter == ModuleType.RAM_MONITOR:
                         self._render_results_list()
                 elif msg_type == "BOOT_DIAG_READY":
@@ -688,7 +698,17 @@ class AeroSystemCleanerApp(ctk.CTk):
                             ),
                         )
                     if custom_msg:
-                        self.status_label.configure(text=custom_msg)
+                        self.status_label.configure(text=custom_msg, text_color=COLOR_SUCCESS_GREEN)
+                    elif should_render and report:
+                        ok_cards = sum(1 for c in report.cards if c.status == "ok")
+                        self.status_label.configure(
+                            text=(
+                                f"✓ Auditoría completada ({datetime.now().strftime('%H:%M:%S')}): "
+                                f"{ok_cards}/{len(report.cards)} comprobaciones óptimas • Arranque ~{report.total_boot_sec}s."
+                            ),
+                            text_color=COLOR_SUCCESS_GREEN if report.overall_status == "green" else COLOR_TEXT_PRIMARY,
+                        )
+                    self.progress_bar.set(1.0)
                     if should_render and self.active_filter == ModuleType.OPTIMIZATION:
                         self._render_results_list()
         except queue.Empty:
@@ -701,8 +721,12 @@ class AeroSystemCleanerApp(ctk.CTk):
     ) -> None:
         if render_when_done and not custom_status:
             self.status_label.configure(
-                text="Analizando tiempos de arranque (Kernel -> LoginWindow -> Finder), demonios y Spotlight..."
+                text="⏳ Re-auditando tiempos de arranque (Kernel -> LoginWindow -> Finder), demonios y Spotlight...",
+                text_color=COLOR_ACCENT_BLUE,
             )
+            self.progress_bar.set(0.35)
+            if hasattr(self, "reaudit_boot_btn") and self.reaudit_boot_btn.winfo_exists():
+                self.reaudit_boot_btn.configure(state="disabled", text="⏳ Auditando...")
 
         def worker() -> None:
             report = BootDiagnostics.run_diagnostics()
@@ -1367,7 +1391,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         right_col = ctk.CTkFrame(top_row, fg_color="transparent")
         right_col.pack(side="right", padx=(10, 0))
 
-        ctk.CTkButton(
+        self.quick_opt_btn = ctk.CTkButton(
             right_col,
             text="⚡ Optimizar Finder y DNS",
             font=ctk.CTkFont(family="SF Pro Text", size=12, weight="bold"),
@@ -1378,9 +1402,10 @@ class AeroSystemCleanerApp(ctk.CTk):
             height=34,
             corner_radius=8,
             command=self._run_quick_optimizations_async,
-        ).pack(pady=(0, 6))
+        )
+        self.quick_opt_btn.pack(pady=(0, 6))
 
-        ctk.CTkButton(
+        self.reaudit_boot_btn = ctk.CTkButton(
             right_col,
             text="🔄 Re-auditar Arranque",
             font=ctk.CTkFont(family="SF Pro Text", size=12),
@@ -1391,7 +1416,8 @@ class AeroSystemCleanerApp(ctk.CTk):
             height=29,
             corner_radius=7,
             command=lambda: self._refresh_boot_diagnostics_async(render_when_done=True),
-        ).pack()
+        )
+        self.reaudit_boot_btn.pack()
 
         # 2. Boot Phases 3-Column Strip
         phases_grid = ctk.CTkFrame(parent, fg_color="transparent")
@@ -1534,10 +1560,18 @@ class AeroSystemCleanerApp(ctk.CTk):
             ).pack(side="right")
 
     def _run_quick_optimizations_async(self) -> None:
-        self.status_label.configure(text="Ejecutando optimización de QuickLook y caché DNS...")
+        self.status_label.configure(
+            text="⏳ Ejecutando optimización de QuickLook, demonios y caché DNS...",
+            text_color=COLOR_ACCENT_BLUE,
+        )
+        self.progress_bar.set(0.45)
+        if hasattr(self, "quick_opt_btn") and self.quick_opt_btn.winfo_exists():
+            self.quick_opt_btn.configure(state="disabled", text="⏳ Optimizando...")
 
         def worker() -> None:
             msg = run_quick_macos_optimizations()
+            report = BootDiagnostics.run_diagnostics()
+            self.ui_queue.put(("BOOT_DIAG_READY", (report, True, msg)))
             self.ui_queue.put(("QUICK_OPT_DONE", msg))
 
         threading.Thread(target=worker, daemon=True).start()

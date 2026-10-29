@@ -67,14 +67,14 @@ class BootDiagnostics:
         crit_count = sum(1 for c in cards if c.status == "crit")
         warn_count = sum(1 for c in cards if c.status == "warn")
 
-        if crit_count == 0 and warn_count == 0 and total_boot <= 28:
+        if crit_count == 0 and warn_count == 0 and total_boot <= 45 and l_to_d <= 8:
             overall_status = "green"
             overall_badge = f"🟢 Arranque Rápido y Limpio (~{total_boot}s total)"
             overall_summary = (
                 f"Sistema base: {k_to_l}s • Carga de tu Escritorio: {l_to_d}s • Activo: {uptime_str}. "
                 "No se detectan cuellos de botella ni demonios pesados reteniendo el inicio de sesión."
             )
-        elif crit_count > 0 or total_boot > 45:
+        elif crit_count > 0 or total_boot > 50 or l_to_d > 15:
             overall_status = "red"
             overall_badge = f"🔴 Frenos de Arranque Detectados (~{total_boot}s total)"
             overall_summary = (
@@ -113,6 +113,7 @@ class BootDiagnostics:
             pass
 
         login_epoch = 0
+        session_auth_epoch = 0
         finder_epoch = 0
         try:
             ps_out = subprocess.check_output(
@@ -132,6 +133,10 @@ class BootDiagnostics:
 
                 if "/loginwindow" in comm and (login_epoch == 0 or ts < login_epoch):
                     login_epoch = ts
+                elif ("/secd" in comm or "/talagentd" in comm or "/CoreServicesUIAgent" in comm) and (
+                    session_auth_epoch == 0 or ts < session_auth_epoch
+                ):
+                    session_auth_epoch = ts
                 elif ("/Finder.app/" in comm or "/Dock.app/" in comm) and (
                     finder_epoch == 0 or ts < finder_epoch
                 ):
@@ -151,12 +156,16 @@ class BootDiagnostics:
         if boot_epoch > 0 and login_epoch >= boot_epoch:
             k_to_l = min(180, max(2, login_epoch - boot_epoch))
         else:
-            k_to_l = 14
+            k_to_l = 12
 
-        if login_epoch > 0 and finder_epoch >= login_epoch:
+        # Distinguish human wait time at the login screen from actual post-password desktop load
+        auth_start = session_auth_epoch if (session_auth_epoch > login_epoch) else login_epoch
+        if auth_start > 0 and finder_epoch >= auth_start:
+            l_to_d = min(120, max(2, finder_epoch - auth_start))
+        elif login_epoch > 0 and finder_epoch >= login_epoch:
             l_to_d = min(120, max(2, finder_epoch - login_epoch))
         else:
-            l_to_d = 4
+            l_to_d = 3
 
         return k_to_l, l_to_d, uptime_str
 
