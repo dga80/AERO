@@ -61,6 +61,89 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes} B"
 
 
+def get_total_ram_bytes() -> int:
+    """Returns total physical RAM installed in bytes."""
+    try:
+        import psutil
+        return int(psutil.virtual_memory().total)
+    except Exception:
+        pass
+    try:
+        class _MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", wintypes.DWORD),
+                ("dwMemoryLoad", wintypes.DWORD),
+                ("ullTotalPhys", ctypes.c_uint64),
+                ("ullAvailPhys", ctypes.c_uint64),
+                ("ullTotalPageFile", ctypes.c_uint64),
+                ("ullAvailPageFile", ctypes.c_uint64),
+                ("ullTotalVirtual", ctypes.c_uint64),
+                ("ullAvailVirtual", ctypes.c_uint64),
+                ("ullAvailExtendedVirtual", ctypes.c_uint64),
+            ]
+        stat = _MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            return int(stat.ullTotalPhys)
+    except Exception:
+        pass
+    return 8 * (1024 ** 3)
+
+
+def get_total_ram_label() -> str:
+    """Returns a clean RAM capacity label like '8 GB' or '16 GB'."""
+    gb = round(get_total_ram_bytes() / (1024 ** 3))
+    return f"{max(1, gb)} GB"
+
+
+def get_chip_name() -> str:
+    """Returns a concise name for the Windows processor (e.g. 'Intel Core i5-1135G7', 'AMD Ryzen 7 5800H')."""
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
+        val, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+        clean = " ".join(val.split()).strip()
+        if clean:
+            # Shorten generic tokens if present
+            clean = clean.replace("(R)", "").replace("(TM)", "").replace(" CPU", "").strip()
+            return clean
+    except Exception:
+        pass
+    return "Procesador PC"
+
+
+def get_gpu_info() -> tuple[str, int]:
+    """Returns concise GPU display name and dedicated/accessible VRAM in bytes."""
+    name = "GPU Integrada / Dedicada"
+    vram = 0
+    try:
+        import winreg
+        key_path = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path)
+        for i in range(winreg.QueryInfoKey(k)[0]):
+            sub = winreg.EnumKey(k, i)
+            try:
+                sk = winreg.OpenKey(k, sub)
+                desc, _ = winreg.QueryValueEx(sk, "DriverDesc")
+                desc_str = desc.strip()
+                if desc_str and not desc_str.lower().startswith("microsoft basic"):
+                    name = desc_str.replace("(R)", "").replace("(TM)", "").strip()
+                    for vname in ["HardwareInformation.qwMemorySize", "HardwareInformation.MemorySize"]:
+                        try:
+                            v, _ = winreg.QueryValueEx(sk, vname)
+                            if int(v) > 0:
+                                vram = int(v)
+                                break
+                        except Exception:
+                            pass
+                    break
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return name, vram
+
+
 def _get_ntfs_physical_file_size(path: str, st: os.stat_result) -> int:
     """Returns real physical bytes allocated on NTFS (`GetCompressedFileSizeW`).
     

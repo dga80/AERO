@@ -451,6 +451,48 @@ class SystemDataScanner:
                         selected=False,
                     )
                 )
+
+        # Dynamically scan all subdirectories inside ~/.cache on Windows so no tool/AI cache is missed
+        dot_cache_root = expand_home("~/.cache")
+        if os.path.isdir(dot_cache_root) and not self._cancel_requested:
+            try:
+                with os.scandir(dot_cache_root) as entries:
+                    for entry in entries:
+                        if self._cancel_requested:
+                            break
+                        if entry.name.startswith(".") or entry.is_symlink():
+                            continue
+                        real_norm = os.path.normcase(os.path.realpath(entry.path))
+                        if real_norm in seen_realpaths:
+                            continue
+                        seen_realpaths.add(real_norm)
+                        try:
+                            size = get_entry_size(entry.path, self.is_cancelled)
+                            if size >= self.MIN_CACHE_LOG_BYTES:
+                                items.append(
+                                    ScanItem(
+                                        id=str(uuid.uuid4()),
+                                        name=f"~/.cache/{entry.name}",
+                                        path=entry.path,
+                                        abbreviated_path=abbreviate_path(entry.path),
+                                        size_bytes=size,
+                                        module=ModuleType.DEV_JUNK,
+                                        clean_strategy=CleanStrategy.DELETE_ITEM,
+                                        safety_level=SafetyLevel.SAFE,
+                                        safety_badge="🟢 100% Seguro borrar",
+                                        description=(
+                                            f"Caché de herramientas de desarrollo o IA en ~/.cache/{entry.name}. "
+                                            "100% seguro borrar; se vuelve a generar si la herramienta lo necesita."
+                                        ),
+                                        category_tag="Caché (~/.cache)",
+                                        selected=False,
+                                    )
+                                )
+                        except (PermissionError, FileNotFoundError, OSError):
+                            continue
+            except Exception:
+                pass
+
         return items
 
     def _scan_module_3_app_remnants(

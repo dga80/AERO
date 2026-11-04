@@ -3,6 +3,7 @@ import threading
 from typing import Callable, Optional
 import customtkinter as ctk
 
+from core.boot_diagnostics import BootDiagnostics, BootIssueCard, BootProfileReport
 from core.cleaner import CleanResult, SafeCleaner
 from core.models import ModuleType, SafetyLevel, ScanItem, ScanSummary
 from core.ram_optimizer import AppRamGroup, RamHealthSnapshot, RamOptimizer
@@ -10,6 +11,8 @@ from core.scanner import SystemDataScanner
 from core.utils import (
     empty_windows_trash,
     format_size,
+    get_chip_name,
+    get_total_ram_label,
     get_windows_trash_size,
     open_windows_trash,
     reveal_in_explorer,
@@ -260,6 +263,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         self.trash_bytes: int = 0
         self.ram_health: Optional[RamHealthSnapshot] = None
         self.ram_groups: list[AppRamGroup] = []
+        self.boot_report: Optional[BootProfileReport] = None
 
         self.active_filter: ModuleType = ModuleType.ALL
         self.checkbox_vars: dict[str, ctk.BooleanVar] = {}
@@ -268,8 +272,9 @@ class AeroSystemCleanerApp(ctk.CTk):
 
         self._build_layout()
         self._poll_ui_queue()
-        # Load initial RAM & Recycle Bin badges in background
+        # Load initial RAM & Boot Telemetry in background
         self._refresh_ram_data_async(render_when_done=False)
+        self._refresh_boot_diagnostics_async(render_when_done=False)
 
     # -------------------------------------------------------------------------
     # Layout Construction
@@ -376,15 +381,15 @@ class AeroSystemCleanerApp(ctk.CTk):
             (ModuleType.DEV_JUNK, "2. Desarrollo e IA"),
             (ModuleType.APP_REMNANTS, "3. Restos de Programas"),
             (ModuleType.DOWNLOADS_TM, "4. Descargas y Restauración"),
-            (ModuleType.OPTIMIZATION, "5. Inicio y Optimización"),
-            (ModuleType.RAM_MONITOR, "🚀 6. Monitor y Turbo RAM"),
+            (ModuleType.OPTIMIZATION, "⚡ 5. Arranque y Optimización"),
+            (ModuleType.RAM_MONITOR, "🚀 6. Monitor RAM, CPU y GPU"),
         ]
 
         for mod, title in modules_meta:
             row_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
             row_frame.pack(fill="x", padx=14, pady=1)
 
-            is_ram = mod == ModuleType.RAM_MONITOR
+            is_special = mod in (ModuleType.RAM_MONITOR, ModuleType.OPTIMIZATION)
             btn = ctk.CTkButton(
                 row_frame,
                 text=title,
@@ -394,20 +399,20 @@ class AeroSystemCleanerApp(ctk.CTk):
                 font=ctk.CTkFont(
                     family=FONT_TEXT,
                     size=12,
-                    weight="bold" if is_ram else "normal",
+                    weight="bold" if is_special else "normal",
                 ),
                 fg_color=COLOR_ACCENT_BLUE if mod == ModuleType.ALL else "transparent",
                 hover_color=COLOR_BG_CARD_HOVER,
-                text_color=COLOR_SUCCESS_GREEN if is_ram else COLOR_TEXT_PRIMARY,
+                text_color=COLOR_SUCCESS_GREEN if mod == ModuleType.RAM_MONITOR else COLOR_TEXT_PRIMARY,
                 command=lambda m=mod: self._set_module_filter(m),
             )
             btn.pack(side="left", fill="x", expand=True)
 
             badge = ctk.CTkLabel(
                 row_frame,
-                text="RAM PC" if is_ram else "0 B",
+                text="RAM PC" if mod == ModuleType.RAM_MONITOR else "0 B",
                 font=ctk.CTkFont(family=FONT_TEXT, size=11, weight="bold"),
-                text_color=COLOR_SUCCESS_GREEN if is_ram else COLOR_TEXT_SECONDARY,
+                text_color=COLOR_SUCCESS_GREEN if mod == ModuleType.RAM_MONITOR else COLOR_TEXT_SECONDARY,
                 width=64,
                 anchor="e",
             )
@@ -675,10 +680,53 @@ class AeroSystemCleanerApp(ctk.CTk):
                         self.status_label.configure(text=custom_msg)
                     if should_render and self.active_filter == ModuleType.RAM_MONITOR:
                         self._render_results_list()
+                elif msg_type == "BOOT_DIAG_READY":
+                    report, should_render, custom_msg = payload
+                    self.boot_report = report
+                    opt_badge = self.nav_badges.get(ModuleType.OPTIMIZATION)
+                    if opt_badge and report and not self.all_items:
+                        opt_badge.configure(
+                            text=f"~{report.total_boot_sec}s",
+                            text_color=(
+                                COLOR_SUCCESS_GREEN
+                                if report.overall_status == "green"
+                                else COLOR_WARNING_AMBER
+                                if report.overall_status == "amber"
+                                else COLOR_DANGER_RED
+                            ),
+                        )
+                    if custom_msg:
+                        self.status_label.configure(text=custom_msg)
+                    if should_render and self.active_filter == ModuleType.OPTIMIZATION:
+                        self._render_results_list()
         except queue.Empty:
             pass
         finally:
             self.after(60, self._poll_ui_queue)
+
+    def _refresh_boot_diagnostics_async(
+        self, render_when_done: bool = True, custom_status: Optional[str] = None
+    ) -> None:
+        if render_when_done and not custom_status:
+            self.status_label.configure(
+                text="Analizando tiempos de arranque (Kernel -> Winlogon -> Explorer), inicio automático y servicios..."
+            )
+
+        def worker() -> None:
+            report = BootDiagnostics.run_diagnostics()
+            self.ui_queue.put(("BOOT_DIAG_READY", (report, render_when_done, custom_status)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _run_boot_fix_action_async(self, action_key: str) -> None:
+        self.status_label.configure(text="Aplicando optimización de arranque en Windows...")
+
+        def worker() -> None:
+            msg = BootDiagnostics.execute_fix(action_key)
+            report = BootDiagnostics.run_diagnostics()
+            self.ui_queue.put(("BOOT_DIAG_READY", (report, True, msg)))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _refresh_ram_data_async(
         self, render_when_done: bool = True, custom_status: Optional[str] = None
@@ -832,6 +880,8 @@ class AeroSystemCleanerApp(ctk.CTk):
 
         if module == ModuleType.RAM_MONITOR:
             self._refresh_ram_data_async(render_when_done=True)
+        elif module == ModuleType.OPTIMIZATION:
+            self._refresh_boot_diagnostics_async(render_when_done=True)
         else:
             self._render_results_list()
 
@@ -889,11 +939,64 @@ class AeroSystemCleanerApp(ctk.CTk):
             )
             more_lbl.pack(pady=10)
 
+    def _create_telemetry_bento_card(
+        self,
+        parent: ctk.CTkFrame,
+        col: int,
+        title: str,
+        main_value: str,
+        sub_value: str,
+        progress: float,
+        bar_color: str,
+    ) -> None:
+        pad_x = (0, 6) if col == 0 else (6, 6) if col == 1 else (6, 0)
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=COLOR_BG_CARD,
+            corner_radius=10,
+            border_width=1,
+            border_color=COLOR_BORDER,
+        )
+        card.grid(row=0, column=col, sticky="nsew", padx=pad_x, pady=2)
+
+        ctk.CTkLabel(
+            card,
+            text=title,
+            font=ctk.CTkFont(family=FONT_TEXT, size=10, weight="bold"),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        ).pack(fill="x", padx=14, pady=(10, 2))
+
+        ctk.CTkLabel(
+            card,
+            text=main_value,
+            font=ctk.CTkFont(family=FONT_DISPLAY, size=16, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY,
+            anchor="w",
+        ).pack(fill="x", padx=14)
+
+        bar = ctk.CTkProgressBar(
+            card,
+            height=6,
+            corner_radius=3,
+            progress_color=bar_color,
+        )
+        bar.pack(fill="x", padx=14, pady=(6, 4))
+        bar.set(progress)
+
+        ctk.CTkLabel(
+            card,
+            text=sub_value,
+            font=ctk.CTkFont(family=FONT_TEXT, size=11),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        ).pack(fill="x", padx=14, pady=(0, 10))
+
     # -------------------------------------------------------------------------
-    # Module 6: Live RAM Monitor & Turbo Boost View (Windows PC)
+    # Module 6: Live RAM, CPU & GPU Bento Telemetry View (Windows PC)
     # -------------------------------------------------------------------------
     def _render_ram_monitor_view(self) -> None:
-        self.count_label.configure(text=f"{len(self.ram_groups)} grupos de procesos en RAM")
+        self.count_label.configure(text=f"{len(self.ram_groups)} grupos de procesos activos")
 
         health = self.ram_health or RamOptimizer.get_ram_health()
         if health.status_color == "green":
@@ -906,6 +1009,9 @@ class AeroSystemCleanerApp(ctk.CTk):
             accent = COLOR_DANGER_RED
             bg_tint = "#381B1A"
 
+        chip_name = get_chip_name()
+        total_ram_lbl = get_total_ram_label()
+
         # Top RAM Health & Turbo Boost Hero Card
         hero = ctk.CTkFrame(
             self.results_scroll,
@@ -914,17 +1020,17 @@ class AeroSystemCleanerApp(ctk.CTk):
             border_width=1,
             border_color=accent,
         )
-        hero.pack(fill="x", padx=8, pady=(6, 12))
+        hero.pack(fill="x", padx=8, pady=(6, 10))
 
         top_row = ctk.CTkFrame(hero, fg_color="transparent")
-        top_row.pack(fill="x", padx=16, pady=(14, 6))
+        top_row.pack(fill="x", padx=16, pady=(14, 12))
 
         left_info = ctk.CTkFrame(top_row, fg_color="transparent")
         left_info.pack(side="left", fill="x", expand=True)
 
         ctk.CTkLabel(
             left_info,
-            text=f"MEMORIA RAM FÍSICA WINDOWS ({format_size(health.total_ram_bytes)})",
+            text=f"CENTRO DE TELEMETRÍA EN VIVO • {chip_name.upper()} ({total_ram_lbl})",
             font=ctk.CTkFont(family=FONT_TEXT, size=11, weight="bold"),
             text_color=COLOR_TEXT_SECONDARY,
             anchor="w",
@@ -978,12 +1084,66 @@ class AeroSystemCleanerApp(ctk.CTk):
             command=lambda: self._refresh_ram_data_async(render_when_done=True),
         ).pack()
 
+        # 3-Column Bento Grid: RAM | CPU | GPU
+        bento_grid = ctk.CTkFrame(self.results_scroll, fg_color="transparent")
+        bento_grid.pack(fill="x", padx=8, pady=(0, 12))
+        bento_grid.grid_columnconfigure((0, 1, 2), weight=1, uniform="bento")
+
+        # Card 1: RAM & Swap
+        ram_used_ratio = min(1.0, max(0.05, (100 - health.free_percentage) / 100.0))
+        self._create_telemetry_bento_card(
+            parent=bento_grid,
+            col=0,
+            title="🧠 MEMORIA RAM FÍSICA & SWAP",
+            main_value=f"{format_size(health.used_ram_bytes)} / {format_size(health.total_ram_bytes)}",
+            sub_value=f"Comprimida: {format_size(health.compressed_ram_bytes)} • Paginación: {format_size(health.swap_used_bytes)}",
+            progress=ram_used_ratio,
+            bar_color=accent,
+        )
+
+        # Card 2: CPU Load & Cores
+        cpu_ratio = min(1.0, max(0.04, health.cpu_usage_pct / 100.0))
+        cpu_color = (
+            COLOR_DANGER_RED
+            if health.cpu_usage_pct >= 75
+            else COLOR_WARNING_AMBER
+            if health.cpu_usage_pct >= 40
+            else COLOR_ACCENT_BLUE
+        )
+        self._create_telemetry_bento_card(
+            parent=bento_grid,
+            col=1,
+            title=f"⚡ CPU ({health.cpu_cores} HILOS / NÚCLEOS)",
+            main_value=f"{health.cpu_usage_pct}% Carga Total",
+            sub_value=f"Top CPU: {health.top_cpu_process}",
+            progress=cpu_ratio,
+            bar_color=cpu_color,
+        )
+
+        # Card 3: GPU Hardware & VRAM
+        gpu_ratio = min(1.0, max(0.03, health.gpu_device_pct / 100.0))
+        gpu_color = (
+            COLOR_DANGER_RED
+            if health.gpu_device_pct >= 80
+            else COLOR_WARNING_AMBER
+            if health.gpu_device_pct >= 45
+            else "#BF5AF2"
+        )
+        vram_str = f" • VRAM: {format_size(health.gpu_vram_bytes)}" if health.gpu_vram_bytes > 0 else ""
+        self._create_telemetry_bento_card(
+            parent=bento_grid,
+            col=2,
+            title=f"🎮 {health.gpu_name[:26].upper()}",
+            main_value=f"{health.gpu_device_pct}% Estimado Gráficos",
+            sub_value=f"3D: {health.gpu_renderer_pct}% • Vídeo: {health.gpu_tiler_pct}%{vram_str}",
+            progress=gpu_ratio,
+            bar_color=gpu_color,
+        )
+
         # Section subtitle
         ctk.CTkLabel(
             self.results_scroll,
-            text=(
-                "TOP PROGRAMAS Y PROCESOS EN TU RAM AHORA MISMO (Agrupados automáticamente):"
-            ),
+            text="TOP PROGRAMAS Y PROCESOS EN TU RAM AHORA MISMO (Agrupados automáticamente):",
             font=ctk.CTkFont(family=FONT_TEXT, size=11, weight="bold"),
             text_color=COLOR_TEXT_SECONDARY,
             anchor="w",
@@ -1146,51 +1306,229 @@ class AeroSystemCleanerApp(ctk.CTk):
         threading.Thread(target=worker, daemon=True).start()
 
     def _render_optimization_banner(self, parent: ctk.CTkScrollableFrame) -> None:
-        banner = ctk.CTkFrame(
-            parent,
-            fg_color="#1B2A38",
-            corner_radius=10,
-            border_width=1,
-            border_color=COLOR_ACCENT_BLUE,
-        )
-        banner.pack(fill="x", padx=8, pady=(6, 10))
+        report = self.boot_report or BootDiagnostics.run_diagnostics()
+        self.boot_report = report
 
-        left = ctk.CTkFrame(banner, fg_color="transparent")
-        left.pack(side="left", fill="x", expand=True, padx=14, pady=10)
+        if report.overall_status == "green":
+            accent = COLOR_SUCCESS_GREEN
+            bg_tint = "#182D22"
+        elif report.overall_status == "amber":
+            accent = COLOR_WARNING_AMBER
+            bg_tint = "#332512"
+        else:
+            accent = COLOR_DANGER_RED
+            bg_tint = "#381B1A"
+
+        chip_name = get_chip_name()
+
+        # 1. Boot Timeline Hero Card
+        hero = ctk.CTkFrame(
+            parent,
+            fg_color=bg_tint,
+            corner_radius=12,
+            border_width=1,
+            border_color=accent,
+        )
+        hero.pack(fill="x", padx=8, pady=(6, 10))
+
+        top_row = ctk.CTkFrame(hero, fg_color="transparent")
+        top_row.pack(fill="x", padx=16, pady=(14, 12))
+
+        left_col = ctk.CTkFrame(top_row, fg_color="transparent")
+        left_col.pack(side="left", fill="x", expand=True)
 
         ctk.CTkLabel(
-            left,
-            text="⚡ Optimización Rápida de Windows (Miniaturas Explorer, Working Sets y DNS)",
-            font=ctk.CTkFont(family=FONT_TEXT, size=13, weight="bold"),
-            text_color=COLOR_TEXT_PRIMARY,
+            left_col,
+            text=f"CRONÓMETRO DE ARRANQUE Y AUDITORÍA DE INICIO (WINDOWS • {chip_name.upper()})",
+            font=ctk.CTkFont(family=FONT_TEXT, size=11, weight="bold"),
+            text_color=COLOR_TEXT_SECONDARY,
             anchor="w",
         ).pack(fill="x")
 
         ctk.CTkLabel(
-            left,
-            text=(
-                "Limpia la caché DNS local (`ipconfig /flushdns`), purga bases de datos de miniaturas antiguas "
-                "(`thumbcache_*.db`) y compacta páginas inactivas en RAM (`EmptyWorkingSet`)."
-            ),
-            font=ctk.CTkFont(family=FONT_TEXT, size=11),
-            text_color=COLOR_TEXT_SECONDARY,
-            justify="left",
-            wraplength=520,
+            left_col,
+            text=report.overall_badge,
+            font=ctk.CTkFont(family=FONT_DISPLAY, size=20, weight="bold"),
+            text_color=accent,
             anchor="w",
-        ).pack(fill="x", pady=(2, 0))
+        ).pack(fill="x", pady=(2, 2))
+
+        ctk.CTkLabel(
+            left_col,
+            text=report.overall_summary,
+            font=ctk.CTkFont(family=FONT_TEXT, size=12),
+            text_color=COLOR_TEXT_PRIMARY,
+            justify="left",
+            wraplength=510,
+            anchor="w",
+        ).pack(fill="x")
+
+        right_col = ctk.CTkFrame(top_row, fg_color="transparent")
+        right_col.pack(side="right", padx=(10, 0))
 
         ctk.CTkButton(
-            banner,
+            right_col,
             text="⚡ Optimizar Explorer y DNS",
             font=ctk.CTkFont(family=FONT_TEXT, size=12, weight="bold"),
             fg_color=COLOR_ACCENT_BLUE,
             hover_color=COLOR_ACCENT_BLUE_HOVER,
             text_color="#FFFFFF",
-            width=195,
+            width=205,
             height=34,
             corner_radius=8,
             command=self._run_quick_optimizations_async,
-        ).pack(side="right", padx=14, pady=10)
+        ).pack(pady=(0, 6))
+
+        ctk.CTkButton(
+            right_col,
+            text="🔄 Reanalizar Arranque",
+            font=ctk.CTkFont(family=FONT_TEXT, size=11),
+            fg_color="#2E343B",
+            hover_color="#3B424B",
+            text_color=COLOR_TEXT_PRIMARY,
+            width=205,
+            height=29,
+            corner_radius=7,
+            command=lambda: self._refresh_boot_diagnostics_async(render_when_done=True),
+        ).pack()
+
+        # 2. Boot Phases 3-Column Strip
+        phases_grid = ctk.CTkFrame(parent, fg_color="transparent")
+        phases_grid.pack(fill="x", padx=8, pady=(0, 10))
+        phases_grid.grid_columnconfigure((0, 1, 2), weight=1, uniform="boot_phases")
+
+        self._create_telemetry_bento_card(
+            parent=phases_grid,
+            col=0,
+            title="1️⃣ FASE KERNEL ➔ WINLOGON",
+            main_value=f"{report.kernel_to_login_sec} seg",
+            sub_value="Arranque NTFS, drivers y servicios base",
+            progress=min(1.0, max(0.08, report.kernel_to_login_sec / 45.0)),
+            bar_color=COLOR_SUCCESS_GREEN if report.kernel_to_login_sec <= 22 else COLOR_WARNING_AMBER,
+        )
+
+        self._create_telemetry_bento_card(
+            parent=phases_grid,
+            col=1,
+            title="2️⃣ FASE CONTRASEÑA ➔ ESCRITORIO",
+            main_value=f"{report.login_to_desktop_sec} seg",
+            sub_value="Carga de Explorer, barra de tareas y perfil",
+            progress=min(1.0, max(0.08, report.login_to_desktop_sec / 25.0)),
+            bar_color=COLOR_SUCCESS_GREEN if report.login_to_desktop_sec <= 8 else COLOR_DANGER_RED,
+        )
+
+        self._create_telemetry_bento_card(
+            parent=phases_grid,
+            col=2,
+            title="⏱️ TIEMPO ACTIVO DESDE ENCENDIDO",
+            main_value=report.uptime_str,
+            sub_value=f"Total arranque medido: ~{report.total_boot_sec}s",
+            progress=0.35,
+            bar_color=COLOR_ACCENT_BLUE,
+        )
+
+        # 3. Diagnostic Cards List
+        ctk.CTkLabel(
+            parent,
+            text="AUDITORÍA DE FRENOS DE ARRANQUE Y ACTIVIDAD EN SEGUNDO PLANO:",
+            font=ctk.CTkFont(family=FONT_TEXT, size=11, weight="bold"),
+            text_color=COLOR_TEXT_SECONDARY,
+            anchor="w",
+        ).pack(fill="x", padx=12, pady=(2, 4))
+
+        for b_card in report.cards:
+            self._create_boot_issue_card(parent, b_card)
+
+        filtered = self._get_filtered_items()
+        if filtered:
+            ctk.CTkLabel(
+                parent,
+                text="ARCHIVOS Y CACHÉS DE REGISTRO EN DISCO:",
+                font=ctk.CTkFont(family=FONT_TEXT, size=11, weight="bold"),
+                text_color=COLOR_TEXT_SECONDARY,
+                anchor="w",
+            ).pack(fill="x", padx=12, pady=(10, 4))
+
+    def _create_boot_issue_card(self, parent: ctk.CTkScrollableFrame, item: BootIssueCard) -> None:
+        if item.status == "ok":
+            border_col = "#244A32"
+            pill_bg = "#1B3B28"
+            pill_fg = COLOR_SUCCESS_GREEN
+        elif item.status == "warn":
+            border_col = "#5E4318"
+            pill_bg = "#3A2810"
+            pill_fg = COLOR_WARNING_AMBER
+        else:
+            border_col = "#7A2E2A"
+            pill_bg = "#3D1C1A"
+            pill_fg = "#FF8A80"
+
+        card = ctk.CTkFrame(
+            parent,
+            fg_color=COLOR_BG_CARD,
+            corner_radius=10,
+            border_width=1,
+            border_color=border_col,
+        )
+        card.pack(fill="x", padx=8, pady=4)
+        card.grid_columnconfigure(0, weight=1)
+
+        info_frame = ctk.CTkFrame(card, fg_color="transparent")
+        info_frame.grid(row=0, column=0, padx=14, pady=10, sticky="ew")
+
+        top_line = ctk.CTkFrame(info_frame, fg_color="transparent")
+        top_line.pack(fill="x", anchor="w")
+
+        ctk.CTkLabel(
+            top_line,
+            text=item.title,
+            font=ctk.CTkFont(family=FONT_TEXT, size=13, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY,
+            anchor="w",
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            top_line,
+            text=f"  {item.status_badge}  ",
+            font=ctk.CTkFont(family=FONT_TEXT, size=11, weight="bold"),
+            fg_color=pill_bg,
+            text_color=pill_fg,
+            corner_radius=6,
+        ).pack(side="left", padx=10)
+
+        ctk.CTkLabel(
+            top_line,
+            text=f"•  {item.metric_text}",
+            font=ctk.CTkFont(family=FONT_TEXT, size=11),
+            text_color=COLOR_TEXT_SECONDARY,
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            info_frame,
+            text=item.description,
+            font=ctk.CTkFont(family=FONT_TEXT, size=12),
+            text_color=COLOR_TEXT_SECONDARY,
+            justify="left",
+            wraplength=600,
+            anchor="w",
+        ).pack(fill="x", pady=(4, 0))
+
+        if item.action_label and item.action_key:
+            btn_frame = ctk.CTkFrame(card, fg_color="transparent")
+            btn_frame.grid(row=0, column=1, padx=(6, 14), pady=10, sticky="e")
+
+            act_btn = ctk.CTkButton(
+                btn_frame,
+                text=item.action_label,
+                font=ctk.CTkFont(family=FONT_TEXT, size=12, weight="bold"),
+                fg_color="#2A3845" if item.status == "ok" else "#4A2E1A" if item.status == "warn" else "#4A1D1A",
+                hover_color=COLOR_ACCENT_BLUE_HOVER,
+                text_color=COLOR_TEXT_PRIMARY,
+                height=32,
+                corner_radius=7,
+                command=lambda k=item.action_key: self._run_boot_fix_action_async(k),
+            )
+            act_btn.pack(side="right")
 
     def _run_quick_optimizations_async(self) -> None:
         self.status_label.configure(text="Ejecutando optimización de Explorer, Working Sets y caché DNS...")

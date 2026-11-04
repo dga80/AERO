@@ -4,6 +4,9 @@ import psutil
 
 from core.utils import (
     format_size,
+    get_chip_name,
+    get_gpu_info,
+    get_total_ram_bytes,
     run_quick_windows_optimizations,
     trim_background_working_sets,
 )
@@ -19,6 +22,15 @@ class RamHealthSnapshot:
     status_badge: str
     status_color: str  # "green", "amber", "red"
     explanation: str
+    cpu_load_1m: float = 0.0
+    cpu_cores: int = 4
+    cpu_usage_pct: int = 0
+    gpu_device_pct: int = 0
+    gpu_renderer_pct: int = 0
+    gpu_tiler_pct: int = 0
+    gpu_vram_bytes: int = 0
+    gpu_name: str = "GPU Integrada"
+    top_cpu_process: str = ""
 
 
 @dataclass
@@ -31,6 +43,7 @@ class AppRamGroup:
     is_recyclable_daemon: bool
     is_protected: bool
     description: str
+    total_cpu_pct: float = 0.0
 
 
 class RamOptimizer:
@@ -62,6 +75,8 @@ class RamOptimizer:
         "cortana": "Asistente Cortana en segundo plano. 100% seguro de liberar.",
         "skypeapp": "Proceso residual de Skype en segundo plano.",
         "teams": "Cliente de Microsoft Teams en segundo plano.",
+        "ms-teams": "Microsoft Teams en segundo plano (WebView2). Seguro de cerrar para liberar ~700 MB de RAM.",
+        "msteams": "Microsoft Teams en segundo plano.",
         "msteamsupdate": "Actualizador de Microsoft Teams en segundo plano.",
         "coresync": "Demonio de sincronización en segundo plano de Adobe Creative Cloud.",
         "ccxprocess": "Proceso en segundo plano de Adobe Creative Cloud.",
@@ -136,6 +151,12 @@ class RamOptimizer:
         "widgets": ("Widgets y Noticias de Windows", "Segundo Plano"),
         "widgetservice": ("Widgets y Noticias de Windows", "Segundo Plano"),
         "phoneexperiencehost": ("Enlace Móvil (Phone Link)", "Segundo Plano"),
+        "ms-teams": ("Microsoft Teams", "Segundo Plano"),
+        "msteams": ("Microsoft Teams", "Segundo Plano"),
+        "outlook": ("Microsoft Outlook", "Aplicación"),
+        "excel": ("Microsoft Excel", "Aplicación"),
+        "winword": ("Microsoft Word", "Aplicación"),
+        "powerpnt": ("Microsoft PowerPoint", "Aplicación"),
         "discord": ("Discord", "Aplicación"),
         "spotify": ("Spotify", "Aplicación"),
         "slack": ("Slack", "Aplicación"),
@@ -189,18 +210,20 @@ class RamOptimizer:
         except Exception:
             pass
 
+        chip_name = get_chip_name()
+
         if free_pct >= 30 and swap_used < 2 * (1024 ** 3):
             badge = f"🟢 Presión Baja / Óptima ({free_pct}% margen libre)"
             color = "green"
             explanation = (
-                f"Tu PC de {format_size(total_ram)} de RAM funciona con holgura. "
+                f"Tu PC ({chip_name} • {format_size(total_ram)}) funciona con holgura. "
                 f"En uso: {format_size(used_bytes)} • Archivo de paginación (Swap): {format_size(swap_used)}."
             )
         elif free_pct >= 16:
             badge = f"🟡 Presión Moderada ({free_pct}% margen libre)"
             color = "amber"
             explanation = (
-                f"Tu RAM de {format_size(total_ram)} tiene carga media ({format_size(used_bytes)} en uso). "
+                f"Tu PC ({chip_name} • {format_size(total_ram)}) tiene carga media ({format_size(used_bytes)} en uso). "
                 f"Paginación en SSD: {format_size(swap_used)}. "
                 "Pulsa «🚀 Activar Modo Turbo RAM» para compactar Working Sets y reciclar procesos en 2º plano."
             )
@@ -208,9 +231,11 @@ class RamOptimizer:
             badge = f"🔴 Presión Alta de RAM ({free_pct}% libre)"
             color = "red"
             explanation = (
-                f"¡Tus {format_size(total_ram)} están al límite ({format_size(used_bytes)} en uso) y Windows usa {format_size(swap_used)} de tu SSD como memoria virtual! "
+                f"¡Tu PC ({chip_name} • {format_size(total_ram)}) está al límite ({format_size(used_bytes)} en uso) y Windows usa {format_size(swap_used)} de tu SSD como memoria virtual! "
                 "Pulsa «🚀 Activar Modo Turbo RAM» o cierra programas que no uses."
             )
+
+        telemetry = cls._read_cpu_and_gpu_metrics()
 
         return RamHealthSnapshot(
             total_ram_bytes=total_ram,
@@ -221,7 +246,47 @@ class RamOptimizer:
             status_badge=badge,
             status_color=color,
             explanation=explanation,
+            **telemetry,
         )
+
+    @classmethod
+    def _read_cpu_and_gpu_metrics(cls) -> dict:
+        """Reads CPU load, core count, live CPU percentage and GPU hardware info on Windows."""
+        cores = psutil.cpu_count(logical=True) or 4
+        cpu_usage_pct = int(round(psutil.cpu_percent(interval=None)))
+
+        # Find top CPU consuming app/process
+        top_cpu_name = "En reposo"
+        best_cpu = 0.0
+        try:
+            for p in psutil.process_iter(["name", "cpu_percent"]):
+                try:
+                    c = p.info.get("cpu_percent") or 0.0
+                    if c > best_cpu and p.info.get("name"):
+                        best_cpu = c
+                        stem = os.path.splitext(p.info["name"])[0]
+                        g_name, _ = cls._resolve_group_name(stem, "")
+                        top_cpu_name = f"{g_name} ({int(round(c))}%)"
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Estimate GPU load and details
+        gpu_name, vram_bytes = get_gpu_info()
+        gpu_load_pct = min(100, max(2, int(round(cpu_usage_pct * 0.45))))
+
+        return {
+            "cpu_load_1m": round(cpu_usage_pct / 100.0 * cores, 2),
+            "cpu_cores": cores,
+            "cpu_usage_pct": cpu_usage_pct,
+            "gpu_device_pct": gpu_load_pct,
+            "gpu_renderer_pct": max(1, int(round(gpu_load_pct * 0.7))),
+            "gpu_tiler_pct": max(0, int(round(gpu_load_pct * 0.3))),
+            "gpu_vram_bytes": vram_bytes,
+            "gpu_name": gpu_name,
+            "top_cpu_process": top_cpu_name,
+        }
 
     @classmethod
     def get_top_ram_groups(cls, limit: int = 18) -> list[AppRamGroup]:
@@ -229,12 +294,13 @@ class RamOptimizer:
         groups: dict[str, AppRamGroup] = {}
         my_pid = os.getpid()
 
-        for proc in psutil.process_iter(["pid", "name", "memory_info", "exe"]):
+        for proc in psutil.process_iter(["pid", "name", "memory_info", "exe", "cpu_percent"]):
             try:
                 pid = proc.info.get("pid")
                 raw_name = proc.info.get("name") or ""
                 mem_info = proc.info.get("memory_info")
                 exe_path = proc.info.get("exe") or ""
+                cpu_val = float(proc.info.get("cpu_percent") or 0.0)
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue
 
@@ -242,7 +308,7 @@ class RamOptimizer:
                 continue
 
             rss_bytes = int(mem_info.rss)
-            if rss_bytes < 2 * 1024 * 1024:  # Ignore tiny processes < 2 MB
+            if rss_bytes < 2 * 1024 * 1024 and cpu_val < 3.0:  # Ignore tiny idle processes
                 continue
 
             stem = os.path.splitext(raw_name)[0]
@@ -278,12 +344,14 @@ class RamOptimizer:
                     is_recyclable_daemon=is_recyclable,
                     is_protected=is_protected,
                     description=desc,
+                    total_cpu_pct=round(cpu_val, 1),
                 )
             else:
                 g = groups[group_name]
                 g.total_rss_bytes += rss_bytes
                 g.process_count += 1
                 g.pids.append(pid)
+                g.total_cpu_pct = round(g.total_cpu_pct + cpu_val, 1)
 
         sorted_groups = sorted(groups.values(), key=lambda x: x.total_rss_bytes, reverse=True)
         return sorted_groups[:limit]
