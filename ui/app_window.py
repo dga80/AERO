@@ -272,7 +272,8 @@ class AeroSystemCleanerApp(ctk.CTk):
 
         self._build_layout()
         self._poll_ui_queue()
-        # Load initial RAM & Boot Telemetry in background
+        # Load initial Trash, RAM & Boot Telemetry in background
+        self._update_trash_card_ui(get_macos_trash_size())
         self._refresh_ram_data_async(render_when_done=False)
         self._refresh_boot_diagnostics_async(render_when_done=False)
 
@@ -685,6 +686,7 @@ class AeroSystemCleanerApp(ctk.CTk):
                         ram_badge.configure(text=f"{health.free_percentage}% libre")
                     if custom_msg:
                         self.status_label.configure(text=custom_msg, text_color=COLOR_SUCCESS_GREEN)
+                        self._update_trash_card_ui(get_macos_trash_size())
                     if should_render and self.active_filter == ModuleType.RAM_MONITOR:
                         self._render_results_list()
                 elif msg_type == "BOOT_DIAG_READY":
@@ -704,6 +706,7 @@ class AeroSystemCleanerApp(ctk.CTk):
                         )
                     if custom_msg:
                         self.status_label.configure(text=custom_msg, text_color=COLOR_SUCCESS_GREEN)
+                        self._update_trash_card_ui(get_macos_trash_size())
                     elif should_render and report:
                         ok_cards = sum(1 for c in report.cards if c.status == "ok")
                         self.status_label.configure(

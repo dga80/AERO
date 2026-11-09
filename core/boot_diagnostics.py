@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
-from core.utils import expand_home, get_chip_name, get_total_ram_label
+from send2trash import send2trash
+from core.utils import expand_home, fast_dir_size, format_size, get_chip_name, get_total_ram_label
 
 
 @dataclass
@@ -60,6 +61,7 @@ class BootDiagnostics:
         cards: list[BootIssueCard] = []
         cards.append(cls._check_desktop_overload())
         cards.append(cls._check_reopen_windows_pref())
+        cards.append(cls._check_usb_io_and_aerial_wallpapers())
         cards.append(cls._check_finder_extensions_and_daemons())
         cards.append(cls._check_spotlight_and_external_drives())
         cards.append(cls._check_filevault_and_nvram())
@@ -115,6 +117,7 @@ class BootDiagnostics:
         login_epoch = 0
         session_auth_epoch = 0
         finder_epoch = 0
+        session_settle_epoch = 0
         try:
             ps_out = subprocess.check_output(
                 ["ps", "-eo", "pid=,lstart=,comm="], text=True, timeout=3
@@ -141,6 +144,21 @@ class BootDiagnostics:
                     finder_epoch == 0 or ts < finder_epoch
                 ):
                     finder_epoch = ts
+                elif any(
+                    m in comm
+                    for m in (
+                        "/WallpaperAgent.app/",
+                        "/com.apple.dock.extra",
+                        "/corespotlightd",
+                        "/fileproviderd",
+                        "/WallpaperAerialsExtension",
+                        "/iCloudDriveFileProvider",
+                        "/mdbulkimport",
+                        "/intelligenceflowd",
+                    )
+                ):
+                    if session_settle_epoch == 0 or ts > session_settle_epoch:
+                        session_settle_epoch = ts
         except Exception:
             pass
 
@@ -160,8 +178,16 @@ class BootDiagnostics:
 
         # Distinguish human wait time at the login screen from actual post-password desktop load
         auth_start = session_auth_epoch if (session_auth_epoch > login_epoch) else login_epoch
-        if auth_start > 0 and finder_epoch >= auth_start:
-            l_to_d = min(120, max(2, finder_epoch - auth_start))
+        desktop_ready = finder_epoch
+        if (
+            auth_start > 0
+            and session_settle_epoch > desktop_ready
+            and (session_settle_epoch - auth_start) <= 25
+        ):
+            desktop_ready = session_settle_epoch
+
+        if auth_start > 0 and desktop_ready >= auth_start:
+            l_to_d = min(120, max(2, desktop_ready - auth_start))
         elif login_epoch > 0 and finder_epoch >= login_epoch:
             l_to_d = min(120, max(2, finder_epoch - login_epoch))
         else:
@@ -282,6 +308,88 @@ class BootDiagnostics:
             description=(
                 "macOS no relanza navegadores ni aplicaciones pesadas encima del inicio de sesión, "
                 "ahorrando entre 15 y 25 segundos de compresión de RAM."
+            ),
+        )
+
+    @classmethod
+    def _check_usb_io_and_aerial_wallpapers(cls) -> BootIssueCard:
+        aerials_dir = expand_home("~/Library/Application Support/com.apple.wallpaper/aerials/videos")
+        aerials_bytes = fast_dir_size(aerials_dir) if os.path.isdir(aerials_dir) else 0
+
+        usb_no_dsstore = False
+        net_no_dsstore = False
+        ad_tracking_off = False
+        try:
+            u_out = subprocess.check_output(
+                ["defaults", "read", "com.apple.desktopservices", "DSDontWriteUSBStores"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            ).strip()
+            usb_no_dsstore = u_out in ("1", "true", "TRUE", "YES")
+        except Exception:
+            pass
+
+        try:
+            n_out = subprocess.check_output(
+                ["defaults", "read", "com.apple.desktopservices", "DSDontWriteNetworkStores"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            ).strip()
+            net_no_dsstore = n_out in ("1", "true", "TRUE", "YES")
+        except Exception:
+            pass
+
+        try:
+            a_out = subprocess.check_output(
+                ["defaults", "read", "com.apple.AdLib", "allowApplePersonalizedAdvertising"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            ).strip()
+            ad_tracking_off = a_out in ("0", "false", "FALSE", "NO")
+        except Exception:
+            pass
+
+        findings: list[str] = []
+        if aerials_bytes > 20 * 1024 * 1024:
+            findings.append(f"Vídeos 4K Aerials ({format_size(aerials_bytes)})")
+        if not (usb_no_dsstore and net_no_dsstore):
+            findings.append("Escritura .DS_Store en USB/Red activa")
+        if not ad_tracking_off:
+            findings.append("Demonio AdLib/PromotedContent activo")
+
+        if findings:
+            return BootIssueCard(
+                id="usb_and_wallpaper",
+                title="Vídeos 4K de Fondo (`WallpaperAerials`) y Escritura USB/Red",
+                status="warn" if aerials_bytes < 500 * 1024 * 1024 else "crit",
+                status_badge="🔴 Penaliza Login y VRAM" if aerials_bytes >= 500 * 1024 * 1024 else "🟡 Optimizable",
+                metric_text=" • ".join(findings[:2]),
+                description=(
+                    (
+                        f"Tienes {format_size(aerials_bytes)} en vídeos 4K (.mov) que hacen que WallpaperAerialsExtension "
+                        "decodifique vídeo HEVC al iniciar sesión y consuma ~290 MB de VRAM en WindowServer. "
+                        if aerials_bytes > 20 * 1024 * 1024
+                        else ""
+                    )
+                    + "Además, desactivar la creación de archivos .DS_Store en discos USB externos (como LaCie) y "
+                    "el demonio publicitario (adprivacyd) acelera el montaje de unidades al arrancar."
+                ),
+                action_label="⚡ Optimizar USB y Fondos 4K",
+                action_key="OPTIMIZE_USB_AND_WALLPAPER",
+            )
+
+        return BootIssueCard(
+            id="usb_and_wallpaper",
+            title="E/S de Discos Externos USB, Telemetría y Fondos Dinámicos",
+            status="ok",
+            status_badge="🟢 Optimizado",
+            metric_text="0 B vídeos 4K • USB sin .DS_Store",
+            description=(
+                "Sin vídeos 4K pesados en WallpaperAerialsExtension, sin escritura de .DS_Store en unidades USB/Red "
+                "y con demonios publicitarios de arranque (adprivacyd/promotedcontentd) desactivados."
             ),
         )
 
@@ -549,5 +657,51 @@ class BootDiagnostics:
                 return "✓ Abriendo Ajustes de Spotlight para gestionar carpetas excluidas."
             except Exception:
                 return "Abre Ajustes del Sistema > Spotlight > Privacidad de Spotlight."
+
+        elif action_key == "OPTIMIZE_USB_AND_WALLPAPER":
+            freed_aerials = 0
+            try:
+                subprocess.run(
+                    ["defaults", "write", "com.apple.desktopservices", "DSDontWriteUSBStores", "-bool", "true"],
+                    check=False,
+                    timeout=3,
+                )
+                subprocess.run(
+                    ["defaults", "write", "com.apple.desktopservices", "DSDontWriteNetworkStores", "-bool", "true"],
+                    check=False,
+                    timeout=3,
+                )
+                subprocess.run(
+                    ["defaults", "write", "com.apple.AdLib", "allowApplePersonalizedAdvertising", "-bool", "false"],
+                    check=False,
+                    timeout=3,
+                )
+                subprocess.run(
+                    ["defaults", "write", "com.apple.finder", "DisableAllAnimations", "-bool", "true"],
+                    check=False,
+                    timeout=3,
+                )
+                aerials_dir = expand_home("~/Library/Application Support/com.apple.wallpaper/aerials/videos")
+                if os.path.isdir(aerials_dir):
+                    freed_aerials = fast_dir_size(aerials_dir)
+                    for entry in os.scandir(aerials_dir):
+                        try:
+                            send2trash(entry.path)
+                        except Exception:
+                            pass
+                subprocess.run(
+                    ["killall", "WallpaperAerialsExtension", "adprivacyd", "promotedcontentd"],
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=3,
+                )
+            except Exception:
+                pass
+            if freed_aerials > 0:
+                return (
+                    f"✓ E/S USB/Red optimizada, telemetría AdLib desactivada y {format_size(freed_aerials)} "
+                    "de vídeos 4K Aerials enviados a la Papelera."
+                )
+            return "✓ Escritura .DS_Store en discos USB/Red y telemetría publicitaria de arranque desactivadas."
 
         return "Acción completada."

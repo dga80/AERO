@@ -19,10 +19,27 @@ class SystemDataScanner:
     """Multithreaded-friendly macOS System Data scanner covering 5 specialized modules."""
 
     MIN_CACHE_LOG_BYTES = 1 * 1024 * 1024         # 1 MB minimum for Caches/Logs
-    APP_REMNANTS_THRESHOLD = 200 * 1024 * 1024    # 200 MB strict requirement for Module 3
+    APP_REMNANTS_THRESHOLD = 200 * 1024 * 1024    # 200 MB requirement for active installed apps
+    ORPHAN_REMNANTS_THRESHOLD = 10 * 1024 * 1024  # 10 MB requirement for uninstalled (orphaned) apps
+    PROJECT_ENV_THRESHOLD = 40 * 1024 * 1024      # 40 MB requirement for ~/Proyectos venv/node_modules
     DOWNLOADS_THRESHOLD = 500 * 1024 * 1024       # 500 MB strict requirement for Module 4
 
     PRIORITY_EXTENSIONS = {".dmg", ".pkg", ".zip", ".iso"}
+
+    SAFE_APPLE_USER_CACHES: dict[str, str] = {
+        "GeoServices": "Caché local de mapas y geolocalización de macOS (GeoServices). Se regenera automáticamente.",
+        "com.apple.helpd": "Caché temporal del visor de Ayuda de macOS (helpd). 100% seguro limpiar.",
+        "com.apple.intelligenceflow.intelligenceflowd": "Caché temporal de flujos de IA del sistema (intelligenceflowd). 100% seguro limpiar.",
+        "com.apple.VisualIntelligenceCore": "Caché temporal de análisis visual del sistema. 100% seguro limpiar.",
+        "com.apple.e5rt.e5bundlecache": "Caché de modelos precompilados del Neural Engine (e5bundlecache). Se regenera sola bajo demanda.",
+        "com.apple.parsecd": "Caché temporal de sugerencias de Spotlight y Siri (parsecd). 100% seguro limpiar.",
+        "com.apple.AppleMediaServices": "Caché temporal de Apple Media Services. 100% seguro limpiar.",
+        "com.apple.CloudTelemetry": "Caché local de telemetría en la nube de macOS. 100% seguro limpiar.",
+        "com.apple.amsengagementd": "Caché de avisos y promociones de Apple Media Services. 100% seguro limpiar.",
+        "com.apple.preferencepanes.usercache": "Caché de paneles de Ajustes del Sistema. Se regenera al abrir Ajustes.",
+        "com.apple.tipsd": "Caché de vídeos y tarjetas de la app Consejos (Tips) de macOS. 100% seguro limpiar.",
+        "com.apple.appstoreagent": "Caché temporal del agente de Mac App Store. 100% seguro limpiar.",
+    }
 
     def __init__(self) -> None:
         self._cancel_requested = False
@@ -127,7 +144,6 @@ class SystemDataScanner:
             "CocoaPods",
             "CloudKit",
             "FamilyCircle",
-            "GeoServices",
             "PassKit",
             "audioCache.kcache",
         }
@@ -145,10 +161,11 @@ class SystemDataScanner:
             for idx, entry in enumerate(entry_list):
                 if self._cancel_requested:
                     break
+                is_safe_apple_cache = entry.name in self.SAFE_APPLE_USER_CACHES
                 if (
                     entry.name.startswith(".")
                     or entry.name in excluded_names
-                    or self.app_detector.is_apple_system_folder(entry.name)
+                    or (not is_safe_apple_cache and self.app_detector.is_apple_system_folder(entry.name))
                 ):
                     continue
                 try:
@@ -157,7 +174,11 @@ class SystemDataScanner:
                     size = get_entry_size(entry.path, self.is_cancelled)
                     if size >= self.MIN_CACHE_LOG_BYTES:
                         if idx % 5 == 0:
-                            report(f"Analizando {tag}: {entry.name}...", 0.12 + 0.18 * (idx / total_entries))
+                            report(f"Analizando {tag}: {entry.name}...", 0.12 + 0.14 * (idx / total_entries))
+                        item_desc = self.SAFE_APPLE_USER_CACHES.get(entry.name, desc)
+                        item_strategy = (
+                            CleanStrategy.DELETE_CONTENTS if is_safe_apple_cache else CleanStrategy.DELETE_ITEM
+                        )
                         items.append(
                             ScanItem(
                                 id=str(uuid.uuid4()),
@@ -166,16 +187,88 @@ class SystemDataScanner:
                                 abbreviated_path=abbreviate_path(entry.path),
                                 size_bytes=size,
                                 module=ModuleType.CACHES_LOGS,
-                                clean_strategy=CleanStrategy.DELETE_ITEM,
+                                clean_strategy=item_strategy,
                                 safety_level=SafetyLevel.SAFE,
                                 safety_badge="🟢 100% Seguro borrar",
-                                description=desc,
-                                category_tag=tag,
+                                description=item_desc,
+                                category_tag="Caché Sistema macOS" if is_safe_apple_cache else tag,
                                 selected=False,
                             )
                         )
                 except (PermissionError, FileNotFoundError, OSError):
                     continue
+
+        # Scan safe internal app caches & 4K aerial wallpaper videos in ~/Library/Application Support
+        special_app_support_caches = [
+            (
+                "Fondos de Pantalla en Vídeo 4K (Aerials .mov)",
+                "~/Library/Application Support/com.apple.wallpaper/aerials/videos",
+                "Fondos 4K (Disco + GPU)",
+                (
+                    "Vídeos 4K (.mov) descargados para salvapantallas/fondos dinámicos de macOS. "
+                    "Limpiarlos libera más de 1 GB y evita que WallpaperAerialsExtension decodifique vídeo 4K al iniciar sesión."
+                ),
+            ),
+            (
+                "Adobe Dunamis Telemetry Cache (com.adobe.dunamis)",
+                "~/Library/Application Support/com.adobe.dunamis",
+                "Telemetría Adobe",
+                "Registros analíticos y telemetría acumulada en segundo plano por Adobe (Dunamis). 100% seguro limpiar.",
+            ),
+            (
+                "CoreML Compiled Model Cache (coreMLCache)",
+                "~/Library/Application Support/coreMLCache",
+                "Caché CoreML",
+                "Caché temporal de modelos CoreML compilados en Application Support. Se regenera bajo demanda.",
+            ),
+            (
+                "Antigravity Electron Code Cache",
+                "~/Library/Application Support/Antigravity/Code Cache",
+                "Caché App (Electron)",
+                "Caché de bytecode JS/WASM de Antigravity. 100% seguro limpiar sin afectar tus ajustes ni sesión.",
+            ),
+            (
+                "Antigravity Electron HTTP Cache",
+                "~/Library/Application Support/Antigravity/Cache",
+                "Caché App (Electron)",
+                "Caché temporal de recursos de red de Antigravity. 100% seguro limpiar.",
+            ),
+            (
+                "Antigravity CachedData (V8 Bundles)",
+                "~/Library/Application Support/Antigravity/CachedData",
+                "Caché App (Electron)",
+                "Caché de compilación V8 de versiones de Antigravity. 100% seguro limpiar.",
+            ),
+            (
+                "Antigravity GraphiteDawnCache (GPU)",
+                "~/Library/Application Support/Antigravity/GraphiteDawnCache",
+                "Caché GPU (Metal)",
+                "Caché de shaders gráficos Dawn/Metal de Antigravity. 100% seguro limpiar.",
+            ),
+        ]
+        for label, raw_p, c_tag, c_desc in special_app_support_caches:
+            if self._cancel_requested:
+                break
+            fp = expand_home(raw_p)
+            if os.path.isdir(fp) and not os.path.islink(fp):
+                sz = fast_dir_size(fp, self.is_cancelled)
+                if sz >= self.MIN_CACHE_LOG_BYTES:
+                    items.append(
+                        ScanItem(
+                            id=str(uuid.uuid4()),
+                            name=label,
+                            path=fp,
+                            abbreviated_path=abbreviate_path(fp),
+                            size_bytes=sz,
+                            module=ModuleType.CACHES_LOGS,
+                            clean_strategy=CleanStrategy.DELETE_CONTENTS,
+                            safety_level=SafetyLevel.SAFE,
+                            safety_badge="🟢 100% Seguro borrar",
+                            description=c_desc,
+                            category_tag=c_tag,
+                            selected=False,
+                        )
+                    )
 
         # Scan macOS per-user temporary folders (/private/var/folders/.../<user_id>)
         if not self._cancel_requested:
@@ -452,6 +545,42 @@ class SystemDataScanner:
                 "iOS / CocoaPods",
                 "Caché de pods descargados para proyectos de iOS/macOS. 100% seguro borrar.",
             ),
+            (
+                "Grabaciones Antiguas de Navegador IA (browser_recordings)",
+                "~/.gemini/antigravity/browser_recordings",
+                "IA / Antigravity",
+                "Grabaciones antiguas de sesiones de navegador en ~/.gemini/antigravity/browser_recordings. 100% seguro limpiar.",
+            ),
+            (
+                "Caché de Navegador IA (Default Cache & Code Cache)",
+                "~/.gemini/antigravity-browser-profile/Default/Cache",
+                "IA / Browser Cache",
+                "Caché temporal HTTP del perfil de navegador automatizado (~/.gemini/antigravity-browser-profile). 100% seguro limpiar.",
+            ),
+            (
+                "Caché Bytecode Navegador IA (Default Code Cache)",
+                "~/.gemini/antigravity-browser-profile/Default/Code Cache",
+                "IA / Browser Cache",
+                "Caché de código JS/WASM compilado del navegador automatizado. 100% seguro limpiar.",
+            ),
+            (
+                "Caché Service Worker Navegador IA (Default)",
+                "~/.gemini/antigravity-browser-profile/Default/Service Worker/CacheStorage",
+                "IA / Browser Cache",
+                "Almacenamiento en caché de Service Workers del navegador automatizado. 100% seguro limpiar.",
+            ),
+            (
+                "Modelos de Optimización Chromium (optimization_guide_model_store)",
+                "~/.gemini/antigravity-browser-profile/optimization_guide_model_store",
+                "IA / Browser Cache",
+                "Modelos temporales descargados por Chromium en el perfil de pruebas. 100% seguro limpiar.",
+            ),
+            (
+                "Caché Extensiones CRX (component_crx_cache)",
+                "~/.gemini/antigravity-browser-profile/component_crx_cache",
+                "IA / Browser Cache",
+                "Paquetes CRX en caché de componentes de Chromium. 100% seguro limpiar.",
+            ),
         ]
         items: list[ScanItem] = []
         covered_paths: set[str] = set()
@@ -463,7 +592,7 @@ class SystemDataScanner:
             covered_paths.add(os.path.realpath(full_path))
             if not os.path.exists(full_path):
                 continue
-            report(f"Calculando Desarrollo e IA: {label}...", 0.32 + 0.16 * ((idx + 1) / len(dev_targets)))
+            report(f"Calculando Desarrollo e IA: {label}...", 0.32 + 0.12 * ((idx + 1) / len(dev_targets)))
             size = fast_dir_size(full_path, self.is_cancelled)
             if size >= self.MIN_CACHE_LOG_BYTES:
                 items.append(
@@ -482,6 +611,120 @@ class SystemDataScanner:
                         selected=False,
                     )
                 )
+
+        # Obsolete full backup/duplicate directories in ~/.gemini & orphaned IntelliJ JDKs
+        obsolete_dev_dirs = [
+            (
+                "Copia de Seguridad Duplicada (~/.gemini/antigravity-backup)",
+                "~/.gemini/antigravity-backup",
+                "IA / Backup Antiguo",
+                (
+                    "Copia de seguridad duplicada antigua (~945 MB) de ~/.gemini/antigravity. "
+                    "100% seguro borrar; tu sesión activa actual reside en ~/.gemini/antigravity."
+                ),
+            ),
+            (
+                "Carpeta Duplicada de Versión Previa (~/.gemini/antigravity-ide)",
+                "~/.gemini/antigravity-ide",
+                "IA / Versión Antigua",
+                (
+                    "Datos duplicados antiguos (~957 MB) de cuando la app se llamaba Antigravity IDE. "
+                    "100% seguro borrar; la app actual utiliza ~/.gemini/antigravity."
+                ),
+            ),
+        ]
+        for label, raw_p, d_tag, d_desc in obsolete_dev_dirs:
+            if self._cancel_requested:
+                break
+            fp = expand_home(raw_p)
+            if os.path.isdir(fp) and not os.path.islink(fp):
+                sz = fast_dir_size(fp, self.is_cancelled)
+                if sz >= self.MIN_CACHE_LOG_BYTES:
+                    items.append(
+                        ScanItem(
+                            id=str(uuid.uuid4()),
+                            name=label,
+                            path=fp,
+                            abbreviated_path=abbreviate_path(fp),
+                            size_bytes=sz,
+                            module=ModuleType.DEV_JUNK,
+                            clean_strategy=CleanStrategy.DELETE_ITEM,
+                            safety_level=SafetyLevel.SAFE,
+                            safety_badge="🟢 100% Seguro borrar",
+                            description=d_desc,
+                            category_tag=d_tag,
+                            selected=False,
+                        )
+                    )
+
+        # Scan abandoned playgrounds inside ~/.gemini/antigravity/playground (e.g., polar-spirit node_modules)
+        playground_root = expand_home("~/.gemini/antigravity/playground")
+        if os.path.isdir(playground_root) and not self._cancel_requested:
+            try:
+                with os.scandir(playground_root) as entries:
+                    for entry in entries:
+                        if entry.name.startswith(".") or entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                            continue
+                        sz = fast_dir_size(entry.path, self.is_cancelled)
+                        if sz >= self.ORPHAN_REMNANTS_THRESHOLD:
+                            items.append(
+                                ScanItem(
+                                    id=str(uuid.uuid4()),
+                                    name=f"Playground Temporal IA: {entry.name}",
+                                    path=entry.path,
+                                    abbreviated_path=abbreviate_path(entry.path),
+                                    size_bytes=sz,
+                                    module=ModuleType.DEV_JUNK,
+                                    clean_strategy=CleanStrategy.DELETE_ITEM,
+                                    safety_level=SafetyLevel.SAFE,
+                                    safety_badge="🟢 100% Seguro borrar",
+                                    description=(
+                                        f"Proyecto temporal de pruebas en ~/.gemini/antigravity/playground/{entry.name} "
+                                        "(incluye node_modules/.next). 100% seguro borrar si ya no usas ese experimento."
+                                    ),
+                                    category_tag="IA / Playground",
+                                    selected=False,
+                                )
+                            )
+            except (PermissionError, FileNotFoundError, OSError):
+                pass
+
+        # Scan orphaned IntelliJ IDEA JDKs in ~/Library/Java/JavaVirtualMachines
+        user_jvms_dir = expand_home("~/Library/Java/JavaVirtualMachines")
+        if os.path.isdir(user_jvms_dir) and not self._cancel_requested:
+            intellij_installed = any(
+                k in self.app_detector.installed_app_names
+                for k in ("intellijidea", "pycharm", "androidstudio", "webstorm")
+            )
+            if not intellij_installed:
+                try:
+                    with os.scandir(user_jvms_dir) as entries:
+                        for entry in entries:
+                            if entry.name.startswith(".") or entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                                continue
+                            sz = fast_dir_size(entry.path, self.is_cancelled)
+                            if sz >= self.ORPHAN_REMNANTS_THRESHOLD:
+                                items.append(
+                                    ScanItem(
+                                        id=str(uuid.uuid4()),
+                                        name=f"JDK Huérfano de IntelliJ ({entry.name})",
+                                        path=entry.path,
+                                        abbreviated_path=abbreviate_path(entry.path),
+                                        size_bytes=sz,
+                                        module=ModuleType.DEV_JUNK,
+                                        clean_strategy=CleanStrategy.DELETE_ITEM,
+                                        safety_level=SafetyLevel.SAFE,
+                                        safety_badge="🟢 100% Seguro borrar",
+                                        description=(
+                                            f"Máquina virtual Java ({entry.name}) descargada en tu usuario por un IDE de JetBrains "
+                                            "ya desinstalado (además ya dispones de JDK del sistema en /Library/Java)."
+                                        ),
+                                        category_tag="Java / JDK Huérfano",
+                                        selected=False,
+                                    )
+                                )
+                except (PermissionError, FileNotFoundError, OSError):
+                    pass
 
         # Dynamically scan all subdirectories inside ~/.cache so no dev/AI cache (e.g., prisma, antigravity, playwright, cypress) is missed
         dot_cache_root = expand_home("~/.cache")
@@ -523,19 +766,68 @@ class SystemDataScanner:
             except (PermissionError, FileNotFoundError, OSError):
                 pass
 
+        # Scan heavy reinstallable environments (venv, .venv, node_modules, .next) inside ~/Proyectos
+        proyectos_root = expand_home("~/Proyectos")
+        if os.path.isdir(proyectos_root) and not self._cancel_requested:
+            report("Inspeccionando entornos virtuales y node_modules en ~/Proyectos...", 0.50)
+            env_folder_names = {"venv", ".venv", "node_modules", ".next"}
+            try:
+                with os.scandir(proyectos_root) as proj_entries:
+                    for proj in proj_entries:
+                        if self._cancel_requested:
+                            break
+                        if proj.name.startswith(".") or proj.is_symlink() or not proj.is_dir(follow_symlinks=False):
+                            continue
+                        if proj.name.lower() == "aero":
+                            continue
+                        for env_name in env_folder_names:
+                            cand = os.path.join(proj.path, env_name)
+                            if os.path.isdir(cand) and not os.path.islink(cand):
+                                sz = fast_dir_size(cand, self.is_cancelled)
+                                if sz >= self.PROJECT_ENV_THRESHOLD:
+                                    items.append(
+                                        ScanItem(
+                                            id=str(uuid.uuid4()),
+                                            name=f"Entorno {env_name} en «{proj.name}»",
+                                            path=cand,
+                                            abbreviated_path=abbreviate_path(cand),
+                                            size_bytes=sz,
+                                            module=ModuleType.DEV_JUNK,
+                                            clean_strategy=CleanStrategy.DELETE_ITEM,
+                                            safety_level=SafetyLevel.REVIEW,
+                                            safety_badge="🟡 Proyecto Local (Revisar)",
+                                            description=(
+                                                f"Dependencias instaladas ({env_name}) del proyecto «{proj.name}». "
+                                                "Si ya no trabajas activamente en este proyecto, puedes borrarlo para ahorrar gigas "
+                                                "(tu código fuente no se toca y siempre puedes reinstalarlo con pip/npm)."
+                                            ),
+                                            warning_label=(
+                                                "🟡 ENTORNOS DE PROYECTO: No se marca automáticamente. "
+                                                "Márcalo solo si tienes el proyecto archivado o no lo estás ejecutando."
+                                            ),
+                                            category_tag="Entorno de Proyecto",
+                                            selected=False,
+                                        )
+                                    )
+            except (PermissionError, FileNotFoundError, OSError):
+                pass
+
         return items
 
     def _scan_module_3_app_remnants(
         self, report: Callable[[str, float], None]
     ) -> list[ScanItem]:
-        """Module 3: Scans ~/Library/Application Support, ~/Library/Containers (> 200 MB),
+        """Module 3: Scans ~/Library/Application Support, ~/Library/Containers,
         plus known heavy hidden app-remnant folders in `~` (`.vscode`, `.android`, `.rvm`, etc.).
+        Uses a 10 MB threshold for confirmed uninstalled/orphaned apps and 200 MB for active apps.
         """
         items: list[ScanItem] = []
         targets = [
             (expand_home("~/Library/Application Support"), "Application Support"),
             (expand_home("~/Library/Containers"), "Containers"),
         ]
+        # Excluded here because Module 1 already handles them as 100% safe regenerable caches
+        module_1_handled = {"com.adobe.dunamis", "coremlcache"}
 
         for root_dir, tag in targets:
             if self._cancel_requested or not os.path.isdir(root_dir):
@@ -548,6 +840,7 @@ class SystemDataScanner:
                         if not e.name.startswith(".")
                         and not e.is_symlink()
                         and e.is_dir(follow_symlinks=False)
+                        and e.name.lower() not in module_1_handled
                         and not self.app_detector.is_apple_system_folder(e.name)
                     ]
             except (PermissionError, FileNotFoundError, OSError):
@@ -564,10 +857,13 @@ class SystemDataScanner:
                     )
                 try:
                     size = fast_dir_size(entry.path, self.is_cancelled)
-                    if size > self.APP_REMNANTS_THRESHOLD:
-                        safety_level, badge, desc, warning = self.app_detector.classify_app_remnant(
-                            entry.name, tag
-                        )
+                    if size < self.ORPHAN_REMNANTS_THRESHOLD:
+                        continue
+                    safety_level, badge, desc, warning = self.app_detector.classify_app_remnant(
+                        entry.name, tag
+                    )
+                    # Show all uninstalled/orphaned remnants >= 10 MB, and active apps > 200 MB
+                    if safety_level == SafetyLevel.SAFE or size > self.APP_REMNANTS_THRESHOLD:
                         items.append(
                             ScanItem(
                                 id=str(uuid.uuid4()),
@@ -588,7 +884,7 @@ class SystemDataScanner:
                 except (PermissionError, FileNotFoundError, OSError):
                     continue
 
-        # Also inspect known hidden app-data folders in ~ (> 200 MB) that uninstalled apps leave behind
+        # Also inspect known hidden app-data folders in ~ that uninstalled apps leave behind
         hidden_app_folders = [
             (".vscode", "~/.vscode", "Carpeta Oculta (~)"),
             (".android", "~/.android", "Carpeta Oculta (~)"),
@@ -596,6 +892,10 @@ class SystemDataScanner:
             (".ollama", "~/.ollama", "Carpeta Oculta (~)"),
             (".lmstudio", "~/.lmstudio", "Carpeta Oculta (~)"),
             (".cursor", "~/.cursor", "Carpeta Oculta (~)"),
+            (".antigravity-ide", "~/.antigravity-ide", "Carpeta Oculta (~)"),
+            (".codeium", "~/.codeium", "Carpeta Oculta (~)"),
+            (".azure", "~/.azure", "Carpeta Oculta (~)"),
+            (".stitch-mcp", "~/.stitch-mcp", "Carpeta Oculta (~)"),
             (".local/share/powershell", "~/.local/share/powershell", "Datos Locales (~/.local)"),
         ]
         for folder_key, raw_path, tag in hidden_app_folders:
@@ -605,10 +905,12 @@ class SystemDataScanner:
             if not os.path.isdir(full_path) or os.path.islink(full_path):
                 continue
             size = fast_dir_size(full_path, self.is_cancelled)
-            if size > self.APP_REMNANTS_THRESHOLD:
-                safety_level, badge, desc, warning = self.app_detector.classify_app_remnant(
-                    folder_key, tag
-                )
+            if size < self.ORPHAN_REMNANTS_THRESHOLD:
+                continue
+            safety_level, badge, desc, warning = self.app_detector.classify_app_remnant(
+                folder_key, tag
+            )
+            if safety_level == SafetyLevel.SAFE or size > self.APP_REMNANTS_THRESHOLD:
                 items.append(
                     ScanItem(
                         id=str(uuid.uuid4()),

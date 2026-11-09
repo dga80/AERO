@@ -144,19 +144,38 @@ def get_entry_size(path: str, cancel_check: Optional[Callable[[], bool]] = None)
 
 
 def get_macos_trash_size() -> int:
-    """Calculates the current physical size of ~/.Trash."""
+    """Calculates the current physical size of ~/.Trash (with Finder AppleScript fallback if TCC restricts ~/.Trash)."""
     trash_dir = expand_home("~/.Trash")
-    if not os.path.isdir(trash_dir):
-        return 0
-    return fast_dir_size(trash_dir)
+    if os.path.isdir(trash_dir):
+        try:
+            os.listdir(trash_dir)
+            return fast_dir_size(trash_dir)
+        except (PermissionError, OSError):
+            pass
+
+    try:
+        out = subprocess.check_output(
+            [
+                "osascript",
+                "-e",
+                'tell application "Finder" to if (count items of trash) > 0 then get physical size of trash else return 0',
+            ],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=4,
+        ).strip()
+        if out and out.isdigit():
+            return int(out)
+    except Exception:
+        pass
+    return 0
 
 
 def open_macos_trash() -> None:
     """Opens the user's macOS Trash folder in Finder."""
-    trash_dir = expand_home("~/.Trash")
     try:
         subprocess.Popen(
-            ["open", trash_dir],
+            ["osascript", "-e", 'tell application "Finder" to open trash', "-e", 'tell application "Finder" to activate'],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -212,8 +231,9 @@ def empty_macos_trash() -> tuple[bool, str]:
 def run_quick_macos_optimizations() -> str:
     """Runs safe user-level macOS optimizations:
     1. Disables orphaned background updaters in launchctl (Microsoft AutoUpdate, OneDrive, Zoom)
-    2. Resets QuickLook thumbnail cache (`qlmanage -r cache`)
-    3. Flushes local user DNS cache (`dscacheutil -flushcache`)
+    2. Prevents .DS_Store creation on external USB and network drives + disables AdLib daemon
+    3. Resets QuickLook thumbnail cache (`qlmanage -r cache`)
+    4. Flushes local user DNS cache (`dscacheutil -flushcache`)
     """
     messages: list[str] = []
     uid = os.getuid()
@@ -240,6 +260,29 @@ def run_quick_macos_optimizations() -> str:
             )
         except Exception:
             pass
+
+    try:
+        subprocess.run(
+            ["defaults", "write", "com.apple.desktopservices", "DSDontWriteUSBStores", "-bool", "true"],
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+        subprocess.run(
+            ["defaults", "write", "com.apple.desktopservices", "DSDontWriteNetworkStores", "-bool", "true"],
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+        subprocess.run(
+            ["defaults", "write", "com.apple.AdLib", "allowApplePersonalizedAdvertising", "-bool", "false"],
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+        messages.append("E/S USB y Finder optimizados")
+    except Exception:
+        pass
 
     try:
         subprocess.run(

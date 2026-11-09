@@ -51,10 +51,45 @@ class RamOptimizer:
         "applespell": "Caché del corrector ortográfico de macOS. Se infla con el uso; reiniciarlo libera RAM al instante sin afectar nada.",
         "mediaanalysisd": "Analizador en segundo plano de caras y objetos en fotos/vídeos de macOS. Consume bastante RAM; es 100% seguro pausarlo.",
         "photoanalysisd": "Analizador en segundo plano de la fototeca de Fotos. 100% seguro pausarlo para recuperar RAM.",
+        "photolibraryd": "Demonio en segundo plano de la fototeca de Fotos. Seguro de reciclar si Fotos está cerrada.",
+        "cloudphotod": "Sincronizador en segundo plano de Fotos en iCloud. Seguro de reciclar.",
         "mtlcompilerservice": "Servicio temporal de compilación gráfica Metal (GPU). Seguro de liberar.",
         "quicklookuiservice": "Generador de vistas previas (barra espaciadora) del Finder. Seguro de liberar.",
+        "siriactionsd": "Demonio de atajos y sugerencias de Siri en segundo plano. 100% seguro reciclar para liberar RAM.",
+        "siriknowledged": "Base de conocimiento en segundo plano de Siri. Seguro de liberar.",
+        "siriinferenced": "Motor de inferencia en segundo plano de Siri. Seguro de liberar.",
+        "siriappintentsd": "Indexador en segundo plano de intenciones de Siri (AppIntents). Seguro de liberar.",
+        "sirittsd": "Sintetizador de voz en segundo plano de Siri. Seguro de liberar.",
+        "intelligenceflowd": "Demonio de flujos de IA de macOS en segundo plano. Seguro de reciclar cuando está inactivo.",
+        "intelligencecontextd": "Demonio de contexto de IA en segundo plano. Seguro de reciclar.",
+        "intelligencetasksd": "Cola de tareas de IA del sistema en segundo plano. Seguro de reciclar.",
+        "intelligenceplatformcomputeservice": "Servicio de cómputo en segundo plano de plataforma IA. Seguro de reciclar.",
+        "generativeexperiencesd": "Servicio en segundo plano de experiencias generativas de macOS. Seguro de reciclar.",
+        "visualintelligenced": "Servicio de análisis visual en segundo plano de macOS. Seguro de reciclar.",
+        "corespotlightd": "Caché de índices de usuario de CoreSpotlight. Se recicla limpiamente liberando RAM acumulada.",
+        "com.apple.audio.sandboxhelper": "Workers XPC en caché de AudioToolbox (suelen acumularse ~10 procesos en RAM). 100% seguro reciclar.",
+        "com.apple.safariplatformsupport.helper": "Asistente en segundo plano de Safari que consume RAM aunque Safari esté cerrado. Seguro de liberar.",
+        "safaribookmarkssyncagent": "Sincronizador en segundo plano de marcadores de Safari. Seguro de liberar.",
+        "com.apple.safari.safebrowsing.service": "Servicio en segundo plano de navegación segura de Safari. Seguro de liberar.",
+        "wallpaperaerialsextension": "Decodificador de fondos de pantalla en vídeo 4K (Aerials). Seguro de liberar.",
+        "naturallanguaged": "Analizador de lenguaje natural de macOS en segundo plano. Seguro de reciclar.",
+        "suggestd": "Motor de sugerencias en segundo plano de macOS. Seguro de reciclar.",
+        "parsecd": "Demonio de sugerencias en red de Spotlight/Siri (CoreParsec). Seguro de reciclar.",
+        "parsec-fbf": "Proceso en segundo plano de CoreParsec. Seguro de liberar.",
+        "homeenergyd": "Demonio en segundo plano de energía de HomeKit. Seguro de liberar.",
+        "commerce": "Demonio en segundo plano de transacciones de Mac App Store. Seguro de liberar.",
+        "appstoreagent": "Agente en segundo plano de Mac App Store. Seguro de liberar.",
+        "amsengagementd": "Demonio de promociones de Apple Media Services en segundo plano. Seguro de liberar.",
+        "promotedcontentd": "Demonio de contenido promocionado en segundo plano. Seguro de liberar.",
+        "adprivacyd": "Demonio de atribuciones publicitarias en segundo plano. Seguro de liberar.",
+        "tipsd": "Demonio en segundo plano de la app Consejos (Tips). Seguro de liberar.",
+        "feedbackd": "Demonio en segundo plano del Asistente de Comentarios. Seguro de liberar.",
+        "geoanalyticsd": "Demonio de telemetría geográfica en segundo plano. Seguro de liberar.",
+        "com.apple.geod": "Servicio de caché geográfica de macOS (4 procesos XPC). Seguro de reciclar.",
         "weather": "Widget del Tiempo de macOS corriendo en segundo plano. Seguro de liberar.",
+        "weatherd": "Demonio del clima de macOS en segundo plano. Seguro de liberar.",
         "home": "Servicio en segundo plano de la app Casa (HomeKit) de macOS. Seguro de liberar.",
+        "homed": "Demonio de HomeKit en segundo plano. Seguro de liberar.",
         "coresync": "Demonio de sincronización en segundo plano de Adobe Creative Cloud.",
         "ccxprocess": "Proceso en segundo plano de Adobe Creative Cloud.",
         "adobecri": "Servicio de reportes de Adobe en segundo plano.",
@@ -77,8 +112,14 @@ class RamOptimizer:
         "dock",
         "systemuiserver",
         "kernel_task",
+        "mds",
         "mds_stores",
         "mdworker_shared",
+        "syspolicyd",
+        "tccd",
+        "trustd",
+        "linkd",
+        "logd",
         "com.apple.driverkit-applebcmwlan",
         "setstoreupdateservice",
         "sharingd",
@@ -290,7 +331,9 @@ class RamOptimizer:
             if lower_group == "aero":
                 continue
 
-            is_recyclable = any(k == lower_group or k in lower_group for k in cls.RECYCLABLE_DAEMONS)
+            is_recyclable = lower_group in cls.RECYCLABLE_DAEMONS or any(
+                len(k) >= 7 and k in lower_group for k in cls.RECYCLABLE_DAEMONS
+            )
             is_protected = any(p == lower_group for p in cls.PROTECTED_APPS)
 
             if group_name not in groups:
@@ -338,8 +381,10 @@ class RamOptimizer:
         if group_name in cls.APP_DESCRIPTIONS:
             return cls.APP_DESCRIPTIONS[group_name]
         lower_g = group_name.lower()
+        if lower_g in cls.RECYCLABLE_DAEMONS:
+            return cls.RECYCLABLE_DAEMONS[lower_g]
         for key, desc in cls.RECYCLABLE_DAEMONS.items():
-            if key in lower_g or key in comm_path.lower():
+            if len(key) >= 7 and (key in lower_g or key in comm_path.lower()):
                 return desc
         if is_recyclable:
             return "Proceso en segundo plano que puede reciclarse para liberar memoria RAM."

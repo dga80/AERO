@@ -133,9 +133,94 @@ class AppDetector:
             ["com.google.antigravity"],
         ),
         "antigravity ide": (
-            "Configuración y cachés de trabajo de Antigravity IDE.",
-            ["antigravity", "antigravity ide"],
+            "Carpeta antigua residual de «Antigravity IDE» (la versión actual usa «Antigravity»).",
+            ["antigravity ide"],
+            ["com.google.antigravity.ide"],
+        ),
+        ".antigravity-ide": (
+            "Extensiones antiguas de «Antigravity IDE» (~/.antigravity-ide; la versión actual usa ~/.antigravity).",
+            ["antigravity ide"],
+            ["com.google.antigravity.ide"],
+        ),
+        ".codeium": (
+            "Base de datos e índices antiguos del plugin Codeium (~/.codeium).",
+            ["codeium"],
+            [],
+        ),
+        ".azure": (
+            "Binarios y herramientas locales antiguas de Microsoft Azure CLI (~/.azure).",
+            ["azure cli"],
+            [],
+        ),
+        ".stitch-mcp": (
+            "SDK local de Google Cloud utilizado por el servidor MCP de Google Stitch (~/.stitch-mcp).",
+            ["antigravity"],
             ["com.google.antigravity"],
+        ),
+        "obs-studio": (
+            "Escenas, plugins y datos locales de OBS Studio.",
+            ["obs", "obs studio"],
+            ["com.obsproject.obs-studio"],
+        ),
+        "com.operasoftware.opera": (
+            "Perfiles, caché y datos locales del navegador Opera.",
+            ["opera"],
+            ["com.operasoftware.opera"],
+        ),
+        "com.operasoftware.operagx": (
+            "Perfiles, caché y datos locales del navegador Opera GX.",
+            ["opera gx"],
+            ["com.operasoftware.operagx"],
+        ),
+        "zoom.us": (
+            "Datos locales, fondos virtuales y caché de reuniones de Zoom.",
+            ["zoom.us", "zoom"],
+            ["us.zoom.xos"],
+        ),
+        "utorrent web": (
+            "Datos locales y caché del cliente uTorrent Web.",
+            ["utorrent web"],
+            ["com.bittorrent.utorrentweb"],
+        ),
+        "kdenlive": (
+            "Caché de medios y configuración del editor de vídeo Kdenlive.",
+            ["kdenlive"],
+            ["org.kde.kdenlive"],
+        ),
+        "torbrowser-data": (
+            "Perfil de navegación y datos locales de Tor Browser.",
+            ["tor browser"],
+            ["org.torproject.torbrowser"],
+        ),
+        "superwhisper": (
+            "Modelos de dictado por voz y datos locales de Superwhisper.",
+            ["superwhisper"],
+            ["com.superduper.superwhisper"],
+        ),
+        "gitkrakencli": (
+            "Binarios y datos locales de GitKraken CLI.",
+            ["gitkraken"],
+            ["com.axosoft.gitkraken"],
+        ),
+        "vuze": (
+            "Datos residuales del cliente de descargas Vuze.",
+            ["vuze"],
+            ["com.azureus.vuze"],
+        ),
+        "com.amazon.lassen": (
+            "Contenedor y caché local de libros de Amazon Kindle.",
+            ["kindle", "amazon kindle"],
+            ["com.amazon.lassen", "com.amazon.kindle"],
+        ),
+        "com.amazon.kindle": (
+            "Contenedor de datos de Amazon Kindle.",
+            ["kindle", "amazon kindle"],
+            ["com.amazon.lassen", "com.amazon.kindle"],
+        ),
+        "com.trendmicro.trendcleaner": (
+            "Contenedor residual de Trend Micro Cleaner.",
+            ["trend cleaner", "dr cleaner"],
+            ["com.trendmicro.trendcleaner"],
         ),
         ".local/share/powershell": (
             "Módulos y datos locales de Microsoft PowerShell (~/.local/share/powershell).",
@@ -328,9 +413,13 @@ class AppDetector:
                             if entry.name.lower().endswith(".app"):
                                 self._register_app_bundle(entry.path, entry.name[:-4])
                             else:
-                                norm_folder = self._normalize(entry.name)
-                                if len(norm_folder) >= 3:
-                                    self.installed_app_names.add(norm_folder)
+                                if depth == 0:
+                                    norm_folder = self._normalize(entry.name)
+                                    if len(norm_folder) >= 3 and norm_folder not in {
+                                        "utilities",
+                                        "chromeappslocalized",
+                                    }:
+                                        self.installed_app_names.add(norm_folder)
                                 self._scan_apps_dir(entry.path, depth + 1)
                     except (PermissionError, FileNotFoundError, OSError):
                         continue
