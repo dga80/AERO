@@ -1,3 +1,4 @@
+import functools
 import os
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -14,15 +15,9 @@ class CleanResult:
     errors_skipped: int
 
 
-class SafeCleaner:
-    """Executes safe deletions on Windows exclusively via Send2Trash (Papelera de reciclaje).
-    
-    Enforces strict guards so root user/system directories (`%USERPROFILE%`, `%LOCALAPPDATA%`,
-    `%APPDATA%`, `%TEMP%`, `~/Downloads`, `C:\\Windows`, `C:\\ProgramData`)
-    can never be trashed directly as a single item.
-    """
-
-    PROTECTED_ROOTS = {
+@functools.lru_cache(maxsize=1)
+def _get_protected_roots() -> set[str]:
+    return {
         os.path.normcase(os.path.realpath(expand_home("~"))),
         os.path.normcase(os.path.realpath(expand_home("~/.cache"))),
         os.path.normcase(os.path.realpath(expand_home("~/Downloads"))),
@@ -36,6 +31,15 @@ class SafeCleaner:
         os.path.normcase(os.path.realpath(expand_home(r"%WINDIR%\Temp"))),
     }
 
+
+class SafeCleaner:
+    """Executes safe deletions on Windows exclusively via Send2Trash (Papelera de reciclaje).
+    
+    Enforces strict guards so root user/system directories (`%USERPROFILE%`, `%LOCALAPPDATA%`,
+    `%APPDATA%`, `%TEMP%`, `~/Downloads`, `C:\\Windows`, `C:\\ProgramData`)
+    can never be trashed directly as a single item.
+    """
+
     @classmethod
     def clean_items(
         cls,
@@ -46,6 +50,7 @@ class SafeCleaner:
         bytes_freed = 0
         errors_skipped = 0
         total = max(len(items), 1)
+        protected_roots = _get_protected_roots()
 
         for idx, item in enumerate(items):
             if progress_callback:
@@ -57,7 +62,7 @@ class SafeCleaner:
             norm_target = os.path.normcase(os.path.realpath(os.path.normpath(item.path)))
 
             # Safety guard: Never allow trashing a root system directory directly
-            if norm_target in cls.PROTECTED_ROOTS and item.clean_strategy == CleanStrategy.DELETE_ITEM:
+            if norm_target in protected_roots and item.clean_strategy == CleanStrategy.DELETE_ITEM:
                 errors_skipped += 1
                 continue
 

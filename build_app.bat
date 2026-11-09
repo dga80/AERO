@@ -16,10 +16,17 @@ echo [AERO PC] Empaquetando AERO.exe nativo para Windows (doble clic) con PyInst
 python -m PyInstaller --noconfirm --clean ^
     --windowed ^
     --onefile ^
+    --optimize 2 ^
     --name "AERO" ^
     --collect-all customtkinter ^
     --hidden-import send2trash ^
     --hidden-import psutil ^
+    --exclude-module unittest ^
+    --exclude-module pydoc ^
+    --exclude-module doctest ^
+    --exclude-module sqlite3 ^
+    --exclude-module email ^
+    --exclude-module http ^
     main.py
 
 if exist "dist\AERO.exe" (

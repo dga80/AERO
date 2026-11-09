@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from typing import Optional
 
 from core.models import SafetyLevel
@@ -287,19 +288,35 @@ class AppDetector:
         ),
     }
 
-    def __init__(self) -> None:
+    _RE_NORM = re.compile(r"[^a-z0-9]")
+    _RE_VERSION_STRIP = re.compile(
+        r"(\s*\((?:64-bit|32-bit|x64|x86|user)\)|\s+v?\d+(\.\d+)*)+$",
+        flags=re.IGNORECASE,
+    )
+
+    def __init__(self, lazy: bool = True) -> None:
         self.installed_app_names: set[str] = set()
         self.installed_publishers: set[str] = set()
         self.raw_installed_titles: dict[str, str] = {}
-        self.refresh_installed_apps()
+        self._last_refresh_ts: float = 0.0
+        if not lazy:
+            self.refresh_installed_apps(force=True)
 
-    @staticmethod
-    def _normalize(text: str) -> str:
+    @classmethod
+    def _normalize(cls, text: str) -> str:
         """Lowercases and strips non-alphanumeric chars for fuzzy-safe comparison."""
-        return re.sub(r"[^a-z0-9]", "", text.lower())
+        return cls._RE_NORM.sub("", text.lower())
 
-    def refresh_installed_apps(self) -> None:
+    def ensure_initialized(self) -> None:
+        if not self.installed_app_names:
+            self.refresh_installed_apps(force=True)
+
+    def refresh_installed_apps(self, force: bool = False) -> None:
         """Scans Windows Registry Uninstall keys, Program Files, %LOCALAPPDATA%\\Programs, and Start Menu."""
+        now = time.monotonic()
+        if not force and self.installed_app_names and (now - self._last_refresh_ts) < 60.0:
+            return
+        self._last_refresh_ts = now
         self.installed_app_names.clear()
         self.installed_publishers.clear()
         self.raw_installed_titles.clear()
@@ -401,12 +418,7 @@ class AppDetector:
             self.raw_installed_titles.setdefault(norm_full, raw_name)
 
         # Also strip trailing version numbers / architecture tags like "(64-bit)", "v2.4", "2024"
-        cleaned = re.sub(
-            r"(\s*\((?:64-bit|32-bit|x64|x86|user)\)|\s+v?\d+(\.\d+)*)+$",
-            "",
-            raw_name,
-            flags=re.IGNORECASE,
-        ).strip()
+        cleaned = self._RE_VERSION_STRIP.sub("", raw_name).strip()
         norm_cleaned = self._normalize(cleaned)
         if len(norm_cleaned) >= 2:
             self.installed_app_names.add(norm_cleaned)
@@ -427,6 +439,7 @@ class AppDetector:
 
     def _matches_installed(self, candidate: str) -> Optional[str]:
         """Checks if `candidate` matches any installed application name."""
+        self.ensure_initialized()
         norm_cand = self._normalize(candidate)
         if not norm_cand:
             return None
@@ -448,6 +461,7 @@ class AppDetector:
         Returns:
             (safety_level, safety_badge, description, warning_label)
         """
+        self.ensure_initialized()
         lower_name = folder_name.lower().strip()
 
         # 0. Check Vendor Suite Prefixes (e.g., Adobe, JetBrains, NVIDIA, AMD)

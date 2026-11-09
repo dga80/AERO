@@ -1,5 +1,6 @@
 import ctypes
 from ctypes import wintypes
+import functools
 import os
 import subprocess
 from typing import Callable, Optional
@@ -30,6 +31,11 @@ class _SHQUERYRBINFO(ctypes.Structure):
     ]
 
 
+@functools.lru_cache(maxsize=1)
+def _get_user_home() -> str:
+    return os.path.normpath(os.path.expanduser("~"))
+
+
 def expand_home(path: str) -> str:
     """Expands '~' and Windows environment variables (%LOCALAPPDATA%, %APPDATA%, etc.)."""
     expanded = os.path.expandvars(os.path.expanduser(path))
@@ -39,7 +45,7 @@ def expand_home(path: str) -> str:
 def abbreviate_path(path: str) -> str:
     """Replaces the user's home directory prefix with '~' for clean UI display."""
     norm_path = os.path.normpath(path)
-    home = os.path.normpath(os.path.expanduser("~"))
+    home = _get_user_home()
     if norm_path.lower().startswith(home.lower()):
         return "~" + norm_path[len(home):]
     return norm_path
@@ -61,6 +67,7 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes} B"
 
 
+@functools.lru_cache(maxsize=1)
 def get_total_ram_bytes() -> int:
     """Returns total physical RAM installed in bytes."""
     try:
@@ -90,18 +97,20 @@ def get_total_ram_bytes() -> int:
     return 8 * (1024 ** 3)
 
 
+@functools.lru_cache(maxsize=1)
 def get_total_ram_label() -> str:
     """Returns a clean RAM capacity label like '8 GB' or '16 GB'."""
     gb = round(get_total_ram_bytes() / (1024 ** 3))
     return f"{max(1, gb)} GB"
 
 
+@functools.lru_cache(maxsize=1)
 def get_chip_name() -> str:
     """Returns a concise name for the Windows processor (e.g. 'Intel Core i5-1135G7', 'AMD Ryzen 7 5800H')."""
     try:
         import winreg
-        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0")
-        val, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as key:
+            val, _ = winreg.QueryValueEx(key, "ProcessorNameString")
         clean = " ".join(val.split()).strip()
         if clean:
             # Shorten generic tokens if present
@@ -112,6 +121,7 @@ def get_chip_name() -> str:
     return "Procesador PC"
 
 
+@functools.lru_cache(maxsize=1)
 def get_gpu_info() -> tuple[str, int]:
     """Returns concise GPU display name and dedicated/accessible VRAM in bytes."""
     name = "GPU Integrada / Dedicada"
@@ -119,26 +129,26 @@ def get_gpu_info() -> tuple[str, int]:
     try:
         import winreg
         key_path = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
-        k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path)
-        for i in range(winreg.QueryInfoKey(k)[0]):
-            sub = winreg.EnumKey(k, i)
-            try:
-                sk = winreg.OpenKey(k, sub)
-                desc, _ = winreg.QueryValueEx(sk, "DriverDesc")
-                desc_str = desc.strip()
-                if desc_str and not desc_str.lower().startswith("microsoft basic"):
-                    name = desc_str.replace("(R)", "").replace("(TM)", "").strip()
-                    for vname in ["HardwareInformation.qwMemorySize", "HardwareInformation.MemorySize"]:
-                        try:
-                            v, _ = winreg.QueryValueEx(sk, vname)
-                            if int(v) > 0:
-                                vram = int(v)
-                                break
-                        except Exception:
-                            pass
-                    break
-            except Exception:
-                pass
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as k:
+            for i in range(winreg.QueryInfoKey(k)[0]):
+                sub = winreg.EnumKey(k, i)
+                try:
+                    with winreg.OpenKey(k, sub) as sk:
+                        desc, _ = winreg.QueryValueEx(sk, "DriverDesc")
+                        desc_str = desc.strip()
+                        if desc_str and not desc_str.lower().startswith("microsoft basic"):
+                            name = desc_str.replace("(R)", "").replace("(TM)", "").strip()
+                            for vname in ["HardwareInformation.qwMemorySize", "HardwareInformation.MemorySize"]:
+                                try:
+                                    v, _ = winreg.QueryValueEx(sk, vname)
+                                    if int(v) > 0:
+                                        vram = int(v)
+                                        break
+                                except Exception:
+                                    pass
+                            break
+                except Exception:
+                    pass
     except Exception:
         pass
     return name, vram
@@ -185,15 +195,13 @@ def fast_dir_size(path: str, cancel_check: Optional[Callable[[], bool]] = None) 
             with os.scandir(current) as it:
                 for entry in it:
                     try:
-                        if entry.is_symlink():
-                            continue
                         st = entry.stat(follow_symlinks=False)
                         attrs = getattr(st, "st_file_attributes", 0)
                         if attrs & FILE_ATTRIBUTE_REPARSE_POINT:
                             continue
                         if entry.is_dir(follow_symlinks=False):
                             stack.append(entry.path)
-                        elif entry.is_file(follow_symlinks=False):
+                        else:
                             total += _get_ntfs_physical_file_size(entry.path, st)
                     except (PermissionError, FileNotFoundError, OSError):
                         continue
@@ -268,8 +276,8 @@ def empty_windows_trash() -> tuple[bool, str]:
     try:
         proc = subprocess.run(
             ["powershell", "-NoProfile", "-Command", "Clear-RecycleBin -Force -ErrorAction SilentlyContinue"],
-            capture_output=True,
-            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=15,
             creationflags=CREATE_NO_WINDOW,
             check=False,
@@ -334,8 +342,8 @@ def run_quick_windows_optimizations() -> str:
     try:
         subprocess.run(
             ["ipconfig", "/flushdns"],
-            capture_output=True,
-            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=6,
             creationflags=CREATE_NO_WINDOW,
             check=False,

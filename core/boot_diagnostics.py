@@ -53,7 +53,7 @@ class BootDiagnostics:
 
     @classmethod
     def run_diagnostics(cls) -> BootProfileReport:
-        k_to_l, l_to_d, uptime_str = cls._measure_boot_timeline()
+        k_to_l, l_to_d, uptime_str, is_indexing, indexer_rss = cls._measure_boot_timeline_and_indexer()
         total_boot = k_to_l + l_to_d
 
         cards: list[BootIssueCard] = []
@@ -61,7 +61,7 @@ class BootDiagnostics:
         cards.append(cls._check_startup_registry_apps())
         cards.append(cls._check_fast_startup_and_hibernation())
         cards.append(cls._check_low_end_cpu_tweaks())
-        cards.append(cls._check_windows_search_indexing())
+        cards.append(cls._check_windows_search_indexing(is_indexing, indexer_rss))
         cards.append(cls._check_visual_effects_and_explorer())
 
         crit_count = sum(1 for c in cards if c.status == "crit")
@@ -101,8 +101,8 @@ class BootDiagnostics:
         )
 
     @classmethod
-    def _measure_boot_timeline(cls) -> tuple[int, int, str]:
-        """Calculates seconds for Windows boot timeline and uptime."""
+    def _measure_boot_timeline_and_indexer(cls) -> tuple[int, int, str, bool, int]:
+        """Calculates seconds for Windows boot timeline, uptime, and SearchIndexer state in a single pass."""
         import psutil
 
         boot_epoch = int(psutil.boot_time())
@@ -120,25 +120,32 @@ class BootDiagnostics:
         else:
             uptime_str = f"{minutes} min"
 
-        # Try to locate winlogon or csrss and explorer creation times
         k_to_l = 18
         l_to_d = 6
+        is_indexing = False
+        indexer_rss = 0
 
         try:
             exp_time = None
             winlogon_time = None
-            for p in psutil.process_iter(["name", "create_time"]):
+            for p in psutil.process_iter(["name", "create_time", "memory_info"]):
                 pname = (p.info.get("name") or "").lower()
                 if pname == "explorer.exe" and not exp_time:
                     exp_time = p.info.get("create_time")
                 elif pname == "winlogon.exe" and not winlogon_time:
                     winlogon_time = p.info.get("create_time")
+                elif pname == "searchindexer.exe" and not is_indexing:
+                    is_indexing = True
+                    mem = p.info.get("memory_info")
+                    if mem:
+                        indexer_rss = int(mem.rss)
+                if exp_time and winlogon_time and is_indexing:
+                    break
 
             if winlogon_time and winlogon_time >= boot_epoch:
                 k_to_l = max(5, min(90, int(winlogon_time - boot_epoch)))
             if exp_time and winlogon_time and exp_time >= winlogon_time:
                 diff = int(exp_time - winlogon_time)
-                # If the user logged in immediately, this is desktop load time; cap realistic desktop load
                 l_to_d = max(3, min(35, diff if diff <= 35 else 6))
             elif exp_time and exp_time >= boot_epoch:
                 diff = int(exp_time - boot_epoch)
@@ -148,7 +155,7 @@ class BootDiagnostics:
         except Exception:
             pass
 
-        return k_to_l, l_to_d, uptime_str
+        return k_to_l, l_to_d, uptime_str, is_indexing, indexer_rss
 
     @classmethod
     def _check_desktop_overload(cls) -> BootIssueCard:
@@ -209,20 +216,44 @@ class BootDiagnostics:
 
     @classmethod
     def _check_startup_registry_apps(cls) -> BootIssueCard:
-        """Inspects HKCU & HKLM CurrentVersion\\Run startup entries."""
+        """Inspects HKCU & HKLM CurrentVersion\\Run startup entries, filtering out items disabled in Task Manager."""
         import winreg
+
+        disabled_entries: set[str] = set()
+        approved_keys = [
+            (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"),
+            (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32"),
+            (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"),
+            (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run32"),
+        ]
+        for root, ap_path in approved_keys:
+            try:
+                with winreg.OpenKey(root, ap_path) as ak:
+                    for i in range(winreg.QueryInfoKey(ak)[1]):
+                        name, val, _ = winreg.EnumValue(ak, i)
+                        if isinstance(val, (bytes, bytearray)) and len(val) > 0:
+                            # In StartupApproved, odd first byte or 0x03/0x01 means disabled in Task Manager
+                            if val[0] not in (2, 6):
+                                disabled_entries.add(name.lower())
+            except Exception:
+                pass
 
         keys = [
             (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run"),
             (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Run"),
+            (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"),
         ]
         apps = []
+        seen_names: set[str] = set()
         for root, path in keys:
             try:
-                k = winreg.OpenKey(root, path)
-                for i in range(winreg.QueryInfoKey(k)[1]):
-                    name, val, _ = winreg.EnumValue(k, i)
-                    apps.append((name, str(val)))
+                with winreg.OpenKey(root, path) as k:
+                    for i in range(winreg.QueryInfoKey(k)[1]):
+                        name, val, _ = winreg.EnumValue(k, i)
+                        lname = name.lower()
+                        if lname not in disabled_entries and lname not in seen_names:
+                            seen_names.add(lname)
+                            apps.append((name, str(val)))
             except Exception:
                 pass
 
@@ -353,23 +384,8 @@ class BootDiagnostics:
             )
 
     @classmethod
-    def _check_windows_search_indexing(cls) -> BootIssueCard:
+    def _check_windows_search_indexing(cls, is_indexing: bool = False, rss_bytes: int = 0) -> BootIssueCard:
         """Inspects if Windows Search service (WSearch / SearchIndexer) is active."""
-        import psutil
-
-        is_indexing = False
-        rss_bytes = 0
-        try:
-            for p in psutil.process_iter(["name", "memory_info"]):
-                if (p.info.get("name") or "").lower() == "searchindexer.exe":
-                    is_indexing = True
-                    mem = p.info.get("memory_info")
-                    if mem:
-                        rss_bytes = int(mem.rss)
-                    break
-        except Exception:
-            pass
-
         from core.utils import format_size
 
         if is_indexing:

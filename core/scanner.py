@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import os
 import subprocess
 import uuid
@@ -540,16 +541,25 @@ class SystemDataScanner:
                 continue
 
             total_dirs = max(len(subdirs), 1)
-            for idx, entry in enumerate(subdirs):
+            report(f"Analizando {len(subdirs)} carpetas en {tag}...", 0.56)
+
+            def _measure_subdir(entry: os.DirEntry) -> tuple[os.DirEntry, int]:
                 if self._cancel_requested:
-                    break
-                if idx % 4 == 0:
-                    report(
-                        f"Inspeccionando {tag}: {entry.name}...",
-                        0.56 + 0.18 * (idx / total_dirs),
-                    )
+                    return entry, 0
                 try:
-                    size = fast_dir_size(entry.path, self.is_cancelled)
+                    return entry, fast_dir_size(entry.path, self.is_cancelled)
+                except (PermissionError, FileNotFoundError, OSError):
+                    return entry, 0
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                for idx, (entry, size) in enumerate(pool.map(_measure_subdir, subdirs)):
+                    if self._cancel_requested:
+                        break
+                    if idx % 8 == 0:
+                        report(
+                            f"Inspeccionando {tag}: {entry.name}...",
+                            0.56 + 0.18 * (idx / total_dirs),
+                        )
                     if size >= self.APP_REMNANTS_THRESHOLD:
                         safety_level, badge, desc, warning = self.app_detector.classify_app_remnant(
                             entry.name, tag
@@ -571,8 +581,6 @@ class SystemDataScanner:
                                 selected=False,
                             )
                         )
-                except (PermissionError, FileNotFoundError, OSError):
-                    continue
 
         # Also inspect known hidden app-data folders in ~ (> 150 MB) that uninstalled apps leave behind
         hidden_app_folders = [
@@ -808,6 +816,7 @@ class SystemDataScanner:
                 ["vssadmin", "list", "shadows"],
                 capture_output=True,
                 text=True,
+                errors="ignore",
                 timeout=4,
                 creationflags=CREATE_NO_WINDOW,
                 check=False,

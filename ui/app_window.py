@@ -270,6 +270,16 @@ class AeroSystemCleanerApp(ctk.CTk):
         self.nav_buttons: dict[ModuleType, ctk.CTkButton] = {}
         self.nav_badges: dict[ModuleType, ctk.CTkLabel] = {}
 
+        # Pre-instantiated reusable CTkFont objects to eliminate per-row font creation overhead
+        self._font_row_title = ctk.CTkFont(family=FONT_TEXT, size=14, weight="bold")
+        self._font_row_title_sm = ctk.CTkFont(family=FONT_TEXT, size=13, weight="bold")
+        self._font_pill_bold = ctk.CTkFont(family=FONT_TEXT, size=11, weight="bold")
+        self._font_pill_reg = ctk.CTkFont(family=FONT_TEXT, size=11)
+        self._font_mono_path = ctk.CTkFont(family=FONT_MONO, size=11)
+        self._font_desc = ctk.CTkFont(family=FONT_TEXT, size=12)
+        self._font_btn_bold = ctk.CTkFont(family=FONT_TEXT, size=12, weight="bold")
+        self._font_size_val = ctk.CTkFont(family=FONT_DISPLAY, size=15, weight="bold")
+
         self._build_layout()
         self._poll_ui_queue()
         # Load initial RAM & Boot Telemetry in background
@@ -652,13 +662,12 @@ class AeroSystemCleanerApp(ctk.CTk):
     # Threading & Asynchronous Queue Communication
     # -------------------------------------------------------------------------
     def _poll_ui_queue(self) -> None:
+        latest_progress: Optional[tuple[str, float]] = None
         try:
             while True:
                 msg_type, payload = self.ui_queue.get_nowait()
                 if msg_type == "PROGRESS":
-                    text, val = payload
-                    self.status_label.configure(text=text)
-                    self.progress_bar.set(val)
+                    latest_progress = payload
                 elif msg_type == "SCAN_DONE":
                     self._on_scan_complete(payload)
                 elif msg_type == "CLEAN_DONE":
@@ -702,7 +711,12 @@ class AeroSystemCleanerApp(ctk.CTk):
         except queue.Empty:
             pass
         finally:
-            self.after(60, self._poll_ui_queue)
+            if latest_progress is not None:
+                text, val = latest_progress
+                self.status_label.configure(text=text)
+                self.progress_bar.set(val)
+            delay_ms = 55 if self.is_busy else 180
+            self.after(delay_ms, self._poll_ui_queue)
 
     def _refresh_boot_diagnostics_async(
         self, render_when_done: bool = True, custom_status: Optional[str] = None
@@ -735,8 +749,7 @@ class AeroSystemCleanerApp(ctk.CTk):
             self.status_label.configure(text="Analizando Memoria RAM física, paginación (Swap) y procesos activos...")
 
         def worker() -> None:
-            health = RamOptimizer.get_ram_health()
-            groups = RamOptimizer.get_top_ram_groups(limit=18)
+            health, groups = RamOptimizer.get_ram_telemetry_and_groups(limit=18)
             trash_sz = get_windows_trash_size()
             self.ui_queue.put(("RAM_DATA_READY", (health, groups, render_when_done, custom_status, trash_sz)))
 
@@ -1188,7 +1201,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         ctk.CTkLabel(
             top_line,
             text=grp.app_name,
-            font=ctk.CTkFont(family=FONT_TEXT, size=14, weight="bold"),
+            font=self._font_row_title,
             text_color=COLOR_TEXT_PRIMARY,
             anchor="w",
         ).pack(side="left")
@@ -1201,7 +1214,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         ctk.CTkLabel(
             top_line,
             text=proc_label,
-            font=ctk.CTkFont(family=FONT_TEXT, size=11),
+            font=self._font_pill_reg,
             fg_color="#32323A",
             text_color=COLOR_TEXT_SECONDARY,
             corner_radius=6,
@@ -1210,7 +1223,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         ctk.CTkLabel(
             top_line,
             text=f"  {pill_text}  ",
-            font=ctk.CTkFont(family=FONT_TEXT, size=11, weight="bold"),
+            font=self._font_pill_bold,
             fg_color=pill_bg,
             text_color=pill_fg,
             corner_radius=6,
@@ -1219,7 +1232,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         ctk.CTkLabel(
             info_frame,
             text=grp.description,
-            font=ctk.CTkFont(family=FONT_TEXT, size=12),
+            font=self._font_desc,
             text_color="#D0D0D6",
             justify="left",
             wraplength=510,
@@ -1239,7 +1252,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         ctk.CTkLabel(
             right_frame,
             text=format_size(grp.total_rss_bytes),
-            font=ctk.CTkFont(family=FONT_DISPLAY, size=15, weight="bold"),
+            font=self._font_size_val,
             text_color=size_col,
             width=95,
             anchor="e",
@@ -1249,7 +1262,7 @@ class AeroSystemCleanerApp(ctk.CTk):
             ctk.CTkButton(
                 right_frame,
                 text="⚡ Liberar RAM",
-                font=ctk.CTkFont(family=FONT_TEXT, size=12, weight="bold"),
+                font=self._font_btn_bold,
                 fg_color="#1F3D2B",
                 hover_color="#28523A",
                 text_color=COLOR_SUCCESS_GREEN,
@@ -1262,7 +1275,7 @@ class AeroSystemCleanerApp(ctk.CTk):
             ctk.CTkLabel(
                 right_frame,
                 text="Protegido",
-                font=ctk.CTkFont(family=FONT_TEXT, size=11),
+                font=self._font_pill_reg,
                 text_color=COLOR_TEXT_SECONDARY,
                 width=125,
                 anchor="center",
@@ -1271,7 +1284,7 @@ class AeroSystemCleanerApp(ctk.CTk):
             ctk.CTkButton(
                 right_frame,
                 text="Cerrar App",
-                font=ctk.CTkFont(family=FONT_TEXT, size=12),
+                font=self._font_desc,
                 fg_color="#3A2828",
                 hover_color=COLOR_DANGER_RED,
                 text_color=COLOR_TEXT_PRIMARY,
@@ -1286,8 +1299,7 @@ class AeroSystemCleanerApp(ctk.CTk):
 
         def worker() -> None:
             _, _, msg = RamOptimizer.free_process_group(grp)
-            health = RamOptimizer.get_ram_health()
-            groups = RamOptimizer.get_top_ram_groups(limit=18)
+            health, groups = RamOptimizer.get_ram_telemetry_and_groups(limit=18)
             self.ui_queue.put(("RAM_DATA_READY", (health, groups, True, msg, None)))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1299,8 +1311,7 @@ class AeroSystemCleanerApp(ctk.CTk):
 
         def worker() -> None:
             _, _, msg = RamOptimizer.run_turbo_ram_boost()
-            health = RamOptimizer.get_ram_health()
-            groups = RamOptimizer.get_top_ram_groups(limit=18)
+            health, groups = RamOptimizer.get_ram_telemetry_and_groups(limit=18)
             self.ui_queue.put(("RAM_DATA_READY", (health, groups, True, msg, None)))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1482,7 +1493,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         ctk.CTkLabel(
             top_line,
             text=item.title,
-            font=ctk.CTkFont(family=FONT_TEXT, size=13, weight="bold"),
+            font=self._font_row_title_sm,
             text_color=COLOR_TEXT_PRIMARY,
             anchor="w",
         ).pack(side="left")
@@ -1490,7 +1501,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         ctk.CTkLabel(
             top_line,
             text=f"  {item.status_badge}  ",
-            font=ctk.CTkFont(family=FONT_TEXT, size=11, weight="bold"),
+            font=self._font_pill_bold,
             fg_color=pill_bg,
             text_color=pill_fg,
             corner_radius=6,
@@ -1499,14 +1510,14 @@ class AeroSystemCleanerApp(ctk.CTk):
         ctk.CTkLabel(
             top_line,
             text=f"•  {item.metric_text}",
-            font=ctk.CTkFont(family=FONT_TEXT, size=11),
+            font=self._font_pill_reg,
             text_color=COLOR_TEXT_SECONDARY,
         ).pack(side="left")
 
         ctk.CTkLabel(
             info_frame,
             text=item.description,
-            font=ctk.CTkFont(family=FONT_TEXT, size=12),
+            font=self._font_desc,
             text_color=COLOR_TEXT_SECONDARY,
             justify="left",
             wraplength=600,
@@ -1520,7 +1531,7 @@ class AeroSystemCleanerApp(ctk.CTk):
             act_btn = ctk.CTkButton(
                 btn_frame,
                 text=item.action_label,
-                font=ctk.CTkFont(family=FONT_TEXT, size=12, weight="bold"),
+                font=self._font_btn_bold,
                 fg_color="#2A3845" if item.status == "ok" else "#4A2E1A" if item.status == "warn" else "#4A1D1A",
                 hover_color=COLOR_ACCENT_BLUE_HOVER,
                 text_color=COLOR_TEXT_PRIMARY,
@@ -1631,7 +1642,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         name_lbl = ctk.CTkLabel(
             top_line,
             text=item.name,
-            font=ctk.CTkFont(family=FONT_TEXT, size=14, weight="bold"),
+            font=self._font_row_title,
             text_color=COLOR_TEXT_PRIMARY,
             anchor="w",
         )
@@ -1640,7 +1651,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         safety_pill = ctk.CTkLabel(
             top_line,
             text=f"  {item.safety_badge}  ",
-            font=ctk.CTkFont(family=FONT_TEXT, size=11, weight="bold"),
+            font=self._font_pill_bold,
             fg_color=badge_bg,
             text_color=badge_fg,
             corner_radius=6,
@@ -1651,7 +1662,7 @@ class AeroSystemCleanerApp(ctk.CTk):
             tag_lbl = ctk.CTkLabel(
                 top_line,
                 text=f"  {item.category_tag}  ",
-                font=ctk.CTkFont(family=FONT_TEXT, size=11),
+                font=self._font_pill_reg,
                 fg_color="#32323A",
                 text_color=COLOR_TEXT_SECONDARY,
                 corner_radius=6,
@@ -1661,7 +1672,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         path_lbl = ctk.CTkLabel(
             info_frame,
             text=item.abbreviated_path,
-            font=ctk.CTkFont(family=FONT_MONO, size=11),
+            font=self._font_mono_path,
             text_color=COLOR_TEXT_SECONDARY,
             anchor="w",
         )
@@ -1671,7 +1682,7 @@ class AeroSystemCleanerApp(ctk.CTk):
             desc_lbl = ctk.CTkLabel(
                 info_frame,
                 text=item.description,
-                font=ctk.CTkFont(family=FONT_TEXT, size=12),
+                font=self._font_desc,
                 text_color="#D0D0D6",
                 justify="left",
                 wraplength=460,
@@ -1690,7 +1701,7 @@ class AeroSystemCleanerApp(ctk.CTk):
             warn_lbl = ctk.CTkLabel(
                 info_frame,
                 text=item.warning_label,
-                font=ctk.CTkFont(family=FONT_TEXT, size=11, weight="bold"),
+                font=self._font_pill_bold,
                 text_color=warn_color,
                 justify="left",
                 wraplength=460,
@@ -1711,7 +1722,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         size_lbl = ctk.CTkLabel(
             right_frame,
             text=format_size(item.size_bytes),
-            font=ctk.CTkFont(family=FONT_DISPLAY, size=15, weight="bold"),
+            font=self._font_size_val,
             text_color=size_color,
             width=95,
             anchor="e",
@@ -1721,7 +1732,7 @@ class AeroSystemCleanerApp(ctk.CTk):
         explorer_btn = ctk.CTkButton(
             right_frame,
             text="Ver en Explorador",
-            font=ctk.CTkFont(family=FONT_TEXT, size=12),
+            font=self._font_desc,
             fg_color="#32323A",
             hover_color="#42424E",
             text_color=COLOR_TEXT_PRIMARY,
