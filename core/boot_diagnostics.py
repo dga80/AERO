@@ -128,29 +128,42 @@ class BootDiagnostics:
         try:
             exp_time = None
             winlogon_time = None
+            sys_init_time = None
             for p in psutil.process_iter(["name", "create_time", "memory_info"]):
                 pname = (p.info.get("name") or "").lower()
+                ctime = p.info.get("create_time")
                 if pname == "explorer.exe" and not exp_time:
-                    exp_time = p.info.get("create_time")
+                    exp_time = ctime
                 elif pname == "winlogon.exe" and not winlogon_time:
-                    winlogon_time = p.info.get("create_time")
+                    winlogon_time = ctime
+                elif pname in ("services.exe", "lsass.exe", "wininit.exe") and not sys_init_time:
+                    sys_init_time = ctime
                 elif pname == "searchindexer.exe" and not is_indexing:
                     is_indexing = True
                     mem = p.info.get("memory_info")
                     if mem:
                         indexer_rss = int(mem.rss)
-                if exp_time and winlogon_time and is_indexing:
+                if exp_time and winlogon_time and sys_init_time and is_indexing:
                     break
 
-            if winlogon_time and winlogon_time >= boot_epoch:
-                k_to_l = max(5, min(90, int(winlogon_time - boot_epoch)))
+            # Fast Startup / sleep recovery can spawn winlogon hours after boot_time.
+            # Use sys_init_time (services.exe / wininit.exe) as the reliable baseline for kernel -> login.
+            if sys_init_time and sys_init_time >= boot_epoch:
+                init_diff = int(sys_init_time - boot_epoch)
+                if init_diff <= 60:
+                    k_to_l = max(5, init_diff)
+                else:
+                    k_to_l = 18
+            elif winlogon_time and winlogon_time >= boot_epoch:
+                diff = int(winlogon_time - boot_epoch)
+                k_to_l = max(5, min(60, diff if diff <= 60 else 18))
+
             if exp_time and winlogon_time and exp_time >= winlogon_time:
                 diff = int(exp_time - winlogon_time)
                 l_to_d = max(3, min(35, diff if diff <= 35 else 6))
             elif exp_time and exp_time >= boot_epoch:
                 diff = int(exp_time - boot_epoch)
                 if diff > 10:
-                    k_to_l = max(10, min(50, int(diff * 0.7)))
                     l_to_d = max(3, min(25, int(diff * 0.3)))
         except Exception:
             pass
