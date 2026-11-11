@@ -543,6 +543,17 @@ class SystemDataScanner:
             total_dirs = max(len(subdirs), 1)
             report(f"Analizando {len(subdirs)} carpetas en {tag}...", 0.56)
 
+            # Omit folders belonging to currently installed programs.
+            # "Restos de Programas" only lists orphaned remnants of uninstalled software.
+            candidate_subdirs = []
+            for e in subdirs:
+                safety, _, _, _ = self.app_detector.classify_app_remnant(e.name, tag)
+                if safety == SafetyLevel.INSTALLED_APP:
+                    continue
+                candidate_subdirs.append(e)
+
+            candidate_total = max(len(candidate_subdirs), 1)
+
             def _measure_subdir(entry: os.DirEntry) -> tuple[os.DirEntry, int]:
                 if self._cancel_requested:
                     return entry, 0
@@ -552,18 +563,20 @@ class SystemDataScanner:
                     return entry, 0
 
             with ThreadPoolExecutor(max_workers=4) as pool:
-                for idx, (entry, size) in enumerate(pool.map(_measure_subdir, subdirs)):
+                for idx, (entry, size) in enumerate(pool.map(_measure_subdir, candidate_subdirs)):
                     if self._cancel_requested:
                         break
                     if idx % 8 == 0:
                         report(
                             f"Inspeccionando {tag}: {entry.name}...",
-                            0.56 + 0.18 * (idx / total_dirs),
+                            0.56 + 0.18 * (idx / candidate_total),
                         )
                     if size >= self.APP_REMNANTS_THRESHOLD:
                         safety_level, badge, desc, warning = self.app_detector.classify_app_remnant(
                             entry.name, tag
                         )
+                        if safety_level == SafetyLevel.INSTALLED_APP:
+                            continue
                         items.append(
                             ScanItem(
                                 id=str(uuid.uuid4()),
@@ -596,11 +609,14 @@ class SystemDataScanner:
             full_path = expand_home(raw_path)
             if not os.path.isdir(full_path) or os.path.islink(full_path):
                 continue
+            safety_level, badge, desc, warning = self.app_detector.classify_app_remnant(
+                folder_key, tag
+            )
+            # If the app is currently installed, do not treat its active folder as a remnant
+            if safety_level == SafetyLevel.INSTALLED_APP:
+                continue
             size = fast_dir_size(full_path, self.is_cancelled)
             if size >= self.APP_REMNANTS_THRESHOLD:
-                safety_level, badge, desc, warning = self.app_detector.classify_app_remnant(
-                    folder_key, tag
-                )
                 items.append(
                     ScanItem(
                         id=str(uuid.uuid4()),

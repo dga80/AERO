@@ -934,9 +934,16 @@ class AeroSystemCleanerApp(ctk.CTk):
             self._render_optimization_banner(self.results_scroll)
 
         if not filtered:
-            self._render_empty_state(
-                "No se encontraron elementos pendientes en este módulo."
-            )
+            if self.active_filter == ModuleType.APP_REMNANTS:
+                self._render_empty_state(
+                    "✓ No se encontraron restos de programas desinstalados.\n\n"
+                    "Las carpetas de programas actualmente instalados en tu PC se omiten automáticamente "
+                    "para proteger tus perfiles, datos y configuraciones activas."
+                )
+            else:
+                self._render_empty_state(
+                    "No se encontraron elementos pendientes en este módulo."
+                )
             return
 
         display_items = filtered[:200]
