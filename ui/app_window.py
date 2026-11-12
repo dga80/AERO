@@ -14,7 +14,9 @@ from core.utils import (
     get_chip_name,
     get_total_ram_label,
     get_windows_trash_size,
+    is_user_admin,
     open_windows_trash,
+    restart_as_admin,
     reveal_in_explorer,
     run_quick_windows_optimizations,
 )
@@ -157,6 +159,87 @@ class ConfirmTrashDialog(ctk.CTkToplevel):
         self.on_confirm()
 
 
+class ConfirmAdminElevationDialog(ctk.CTkToplevel):
+    """Modal prompt when the user attempts to clean system items without administrator privileges."""
+
+    def __init__(
+        self,
+        parent: ctk.CTk,
+        on_elevate: Callable[[], None],
+    ) -> None:
+        super().__init__(parent)
+        self.title("Permisos de Administrador requeridos")
+        height = 240
+        self.geometry(f"510x{height}")
+        self.resizable(False, False)
+        self.configure(fg_color=COLOR_BG_SIDEBAR)
+        self.transient(parent)
+        self.grab_set()
+
+        self.update_idletasks()
+        x = parent.winfo_x() + (parent.winfo_width() // 2) - 255
+        y = parent.winfo_y() + (parent.winfo_height() // 2) - (height // 2)
+        self.geometry(f"+{max(x, 100)}+{max(y, 100)}")
+
+        container = ctk.CTkFrame(self, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=24, pady=20)
+
+        title_lbl = ctk.CTkLabel(
+            container,
+            text="🛡️ Se requiere ejecutar como Administrador",
+            font=ctk.CTkFont(family=FONT_DISPLAY, size=16, weight="bold"),
+            text_color=COLOR_TEXT_PRIMARY,
+            anchor="w",
+        )
+        title_lbl.pack(fill="x", pady=(0, 8))
+
+        desc_lbl = ctk.CTkLabel(
+            container,
+            text=(
+                "Has seleccionado elementos protegidos del sistema (como Descargas de Windows Update).\n\n"
+                "Para poder limpiarlos, Windows requiere que AERO-PC se ejecute como Administrador para "
+                "detener temporalmente los servicios que mantienen los archivos bloqueados.\n\n"
+                "¿Deseas reiniciar AERO-PC como Administrador ahora?"
+            ),
+            font=ctk.CTkFont(family=FONT_TEXT, size=12),
+            text_color=COLOR_TEXT_SECONDARY,
+            justify="left",
+            wraplength=460,
+            anchor="w",
+        )
+        desc_lbl.pack(fill="x", pady=(0, 14))
+
+        btn_frame = ctk.CTkFrame(container, fg_color="transparent")
+        btn_frame.pack(fill="x", side="bottom")
+
+        cancel_btn = ctk.CTkButton(
+            btn_frame,
+            text="Cancelar",
+            fg_color="#3A3A40",
+            hover_color="#484850",
+            text_color=COLOR_TEXT_PRIMARY,
+            width=110,
+            height=36,
+            corner_radius=8,
+            command=self.destroy,
+        )
+        cancel_btn.pack(side="right", padx=(10, 0))
+
+        elevate_btn = ctk.CTkButton(
+            btn_frame,
+            text="🛡️ Reiniciar como Administrador",
+            fg_color=COLOR_ACCENT_BLUE,
+            hover_color=COLOR_ACCENT_BLUE_HOVER,
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(family=FONT_TEXT, size=12, weight="bold"),
+            width=230,
+            height=36,
+            corner_radius=8,
+            command=lambda: [self.destroy(), on_elevate()],
+        )
+        elevate_btn.pack(side="right")
+
+
 class ConfirmEmptyTrashDialog(ctk.CTkToplevel):
     """Modal confirmation before permanently emptying the Windows Recycle Bin."""
 
@@ -248,7 +331,11 @@ class AeroSystemCleanerApp(ctk.CTk):
         ctk.set_appearance_mode("Dark")
         ctk.set_default_color_theme("blue")
 
-        self.title("AERO PC — Limpiador NTFS y Turbo RAM (Windows)")
+        self.is_admin = is_user_admin()
+        if self.is_admin:
+            self.title("AERO PC [Administrador] — Limpiador NTFS y Turbo RAM (Windows)")
+        else:
+            self.title("AERO PC — Limpiador NTFS y Turbo RAM (Windows)")
         self.geometry("1180x790")
         self.minsize(1040, 690)
         self.configure(fg_color=COLOR_BG_MAIN)
@@ -330,6 +417,40 @@ class AeroSystemCleanerApp(ctk.CTk):
             anchor="w",
         )
         app_sub.pack(fill="x", pady=(1, 0))
+
+        if self.is_admin:
+            admin_badge = ctk.CTkLabel(
+                header_frame,
+                text="🛡️ Modo Administrador",
+                font=ctk.CTkFont(family=FONT_TEXT, size=11, weight="bold"),
+                text_color=COLOR_SUCCESS_GREEN,
+                anchor="w",
+            )
+            admin_badge.pack(fill="x", pady=(3, 0))
+        else:
+            admin_box = ctk.CTkFrame(header_frame, fg_color="transparent")
+            admin_box.pack(fill="x", pady=(3, 0))
+            admin_lbl = ctk.CTkLabel(
+                admin_box,
+                text="Modo Estándar",
+                font=ctk.CTkFont(family=FONT_TEXT, size=11),
+                text_color=COLOR_TEXT_SECONDARY,
+                anchor="w",
+            )
+            admin_lbl.pack(side="left")
+            elevate_btn = ctk.CTkButton(
+                admin_box,
+                text="🛡️ Elevar a Admin",
+                font=ctk.CTkFont(family=FONT_TEXT, size=10, weight="bold"),
+                fg_color="#2A2D36",
+                hover_color=COLOR_ACCENT_BLUE_HOVER,
+                text_color="#FFFFFF",
+                height=22,
+                width=115,
+                corner_radius=6,
+                command=self._elevate_app_to_admin,
+            )
+            elevate_btn.pack(side="right")
 
         # Total Detected Summary Card
         summary_card = ctk.CTkFrame(
@@ -1796,11 +1917,26 @@ class AeroSystemCleanerApp(ctk.CTk):
         )
         self._set_trash_button_state(len(selected_items))
 
+    def _elevate_app_to_admin(self) -> None:
+        restart_as_admin()
+
     def _prompt_clean_selected(self) -> None:
         if self.is_busy:
             return
         selected_items = [i for i in self.all_items if i.selected]
         if not selected_items:
+            return
+
+        # If system items requiring admin are selected and we are not elevated, prompt to elevate
+        needs_admin = any(
+            (i.path.lower().find("softwaredistribution") != -1 or i.path.lower().find("windows.old") != -1)
+            for i in selected_items
+        )
+        if needs_admin and not self.is_admin:
+            ConfirmAdminElevationDialog(
+                parent=self,
+                on_elevate=self._elevate_app_to_admin,
+            )
             return
 
         sel_bytes = sum(i.size_bytes for i in selected_items)

@@ -16,6 +16,7 @@ echo [AERO PC] Empaquetando AERO.exe nativo para Windows (doble clic) con PyInst
 python -m PyInstaller --noconfirm --clean ^
     --windowed ^
     --onefile ^
+    --uac-admin ^
     --optimize 2 ^
     --name "AERO" ^
     --collect-all customtkinter ^

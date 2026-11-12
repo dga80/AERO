@@ -13,6 +13,7 @@ from core.utils import (
     fast_dir_size,
     get_entry_size,
     get_windows_trash_size,
+    is_user_admin,
 )
 
 
@@ -267,6 +268,16 @@ class SystemDataScanner:
                 report(f"Analizando {label}...", 0.16 + 0.16 * (idx / total_targets))
             size = fast_dir_size(full_path, self.is_cancelled)
             if size >= self.MIN_CACHE_LOG_BYTES:
+                badge = "🟢 100% Seguro borrar"
+                warn = None
+                target_desc = desc
+                if raw_path == r"%WINDIR%\SoftwareDistribution\Download":
+                    if not is_user_admin():
+                        badge = "🛡️ Requiere Administrador"
+                        warn = "Requiere ejecutar AERO-PC como Administrador para detener servicios y limpiar."
+                    else:
+                        badge = "🟢 100% Seguro borrar (Admin)"
+                        target_desc = "Paquetes de actualización ya descargados por Windows Update. Se detienen los servicios temporalmente para liberar el espacio."
                 items.append(
                     ScanItem(
                         id=str(uuid.uuid4()),
@@ -277,8 +288,9 @@ class SystemDataScanner:
                         module=ModuleType.CACHES_LOGS,
                         clean_strategy=CleanStrategy.DELETE_CONTENTS,
                         safety_level=SafetyLevel.SAFE,
-                        safety_badge="🟢 100% Seguro borrar",
-                        description=desc,
+                        safety_badge=badge,
+                        description=target_desc,
+                        warning_label=warn,
                         category_tag=tag,
                         selected=False,
                     )
@@ -699,6 +711,11 @@ class SystemDataScanner:
             report("Analizando copia antigua C:\\Windows.old...", 0.84)
             old_size = fast_dir_size(windows_old, self.is_cancelled)
             if old_size > 0:
+                old_badge = "🟢 Copia antigua (Seguro borrar)"
+                old_warn = None
+                if not is_user_admin():
+                    old_badge = "🛡️ Requiere Administrador"
+                    old_warn = "Requiere ejecutar AERO-PC como Administrador para eliminar."
                 items.append(
                     ScanItem(
                         id=str(uuid.uuid4()),
@@ -709,8 +726,9 @@ class SystemDataScanner:
                         module=ModuleType.DOWNLOADS_TM,
                         clean_strategy=CleanStrategy.DELETE_ITEM,
                         safety_level=SafetyLevel.SAFE,
-                        safety_badge="🟢 Copia antigua (Seguro borrar)",
+                        safety_badge=old_badge,
                         description="Carpeta de respaldo de una actualización anterior de Windows. Ocupa muchos gigabytes en C:\\.",
+                        warning_label=old_warn,
                         category_tag="Sistema Windows",
                         selected=False,
                     )

@@ -393,3 +393,66 @@ def reveal_in_explorer(path: str) -> None:
             )
     except Exception:
         pass
+
+
+def is_user_admin() -> bool:
+    """Returns True if the current process is running with elevated Administrator privileges on Windows."""
+    if os.name != "nt":
+        return False
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
+
+
+def restart_as_admin() -> bool:
+    """Relaunches the current application elevated (triggering the Windows UAC prompt) and terminates the current instance."""
+    if os.name != "nt":
+        return False
+    try:
+        import sys
+        if getattr(sys, "frozen", False):
+            exe = sys.executable
+            params = ""
+        else:
+            exe = sys.executable
+            params = f'"{os.path.abspath(sys.argv[0])}"'
+            if len(sys.argv) > 1:
+                params += " " + " ".join(f'"{arg}"' for arg in sys.argv[1:])
+
+        res = ctypes.windll.shell32.ShellExecuteW(
+            None,
+            "runas",
+            exe,
+            params,
+            None,
+            1,  # SW_SHOWNORMAL
+        )
+        if int(res) > 32:
+            sys.exit(0)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def is_windows_update_path(path: str) -> bool:
+    """Returns True if the path points to Windows Update SoftwareDistribution Download directory."""
+    try:
+        norm = os.path.normcase(os.path.realpath(os.path.normpath(path)))
+        wu_path = os.path.normcase(os.path.realpath(expand_home(r"%WINDIR%\SoftwareDistribution\Download")))
+        return norm == wu_path or norm.endswith(r"\softwaredistribution\download")
+    except Exception:
+        return False
+
+
+def is_system_directory_path(path: str) -> bool:
+    r"""Returns True if the path is located inside C:\Windows or is a protected system directory."""
+    try:
+        norm = os.path.normcase(os.path.realpath(os.path.normpath(path)))
+        windir = os.path.normcase(os.path.realpath(expand_home(r"%WINDIR%")))
+        return norm.startswith(windir + os.sep) or norm == windir
+    except Exception:
+        return False
+
+
